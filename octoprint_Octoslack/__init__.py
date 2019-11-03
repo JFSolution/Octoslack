@@ -151,6 +151,7 @@ class OctoslackPlugin(
                     "ReportJobState": False,
                     "ReportJobOrigEstimate": False,
                     "ReportJobProgress": False,
+					"ReportJobUser": False,
                     "ReportFinalPrintTime": False,
                     "ReportMovieStatus": False,
                     "IncludeSupportedCommands": True,
@@ -173,6 +174,7 @@ class OctoslackPlugin(
                     "ReportJobState": False,
                     "ReportJobOrigEstimate": False,
                     "ReportJobProgress": False,
+					"ReportJobUser": False,
                     "ReportFinalPrintTime": False,
                     "ReportMovieStatus": False,
                     "PushoverSound": "pushover",
@@ -194,6 +196,7 @@ class OctoslackPlugin(
                     "ReportJobState": False,
                     "ReportJobOrigEstimate": False,
                     "ReportJobProgress": False,
+					"ReportJobUser": False,
                     "ReportFinalPrintTime": False,
                     "ReportMovieStatus": False,
                     "PushoverSound": "pushover",
@@ -213,6 +216,7 @@ class OctoslackPlugin(
                     "ReportPrinterState": True,
                     "ReportEnvironment": False,
                     "ReportJobState": False,
+					"ReportJobUser": False,
                     "ReportJobOrigEstimate": False,
                     "ReportJobProgress": False,
                     "ReportFinalPrintTime": False,
@@ -236,6 +240,7 @@ class OctoslackPlugin(
                     "ReportJobState": False,
                     "ReportJobOrigEstimate": False,
                     "ReportJobProgress": False,
+					"ReportJobUser": False,
                     "ReportFinalPrintTime": False,
                     "ReportMovieStatus": False,
                     "PushoverSound": "pushover",
@@ -255,6 +260,7 @@ class OctoslackPlugin(
                     "ReportPrinterState": True,
                     "ReportEnvironment": False,
                     "ReportJobState": False,
+					"ReportJobUser": False,
                     "ReportJobOrigEstimate": False,
                     "ReportJobProgress": False,
                     "ReportFinalPrintTime": False,
@@ -276,6 +282,7 @@ class OctoslackPlugin(
                     "ReportPrinterState": True,
                     "ReportEnvironment": False,
                     "ReportJobState": False,
+					"ReportJobUser": False,
                     "ReportJobOrigEstimate": False,
                     "ReportJobProgress": False,
                     "ReportFinalPrintTime": False,
@@ -297,6 +304,7 @@ class OctoslackPlugin(
                     "ReportPrinterState": True,
                     "ReportEnvironment": False,
                     "ReportJobState": False,
+					"ReportJobUser": False,
                     "ReportJobOrigEstimate": False,
                     "ReportJobProgress": False,
                     "ReportFinalPrintTime": False,
@@ -319,6 +327,7 @@ class OctoslackPlugin(
                     "ReportEnvironment": False,
                     "ReportJobState": True,
                     "ReportJobOrigEstimate": True,
+					"ReportJobUser": True,
                     "ReportJobProgress": False,
                     "ReportFinalPrintTime": False,
                     "ReportMovieStatus": False,
@@ -339,6 +348,7 @@ class OctoslackPlugin(
                     "ReportPrinterState": True,
                     "ReportEnvironment": False,
                     "ReportJobState": True,
+					"ReportJobUser": True,
                     "ReportJobOrigEstimate": False,
                     "ReportJobProgress": False,
                     "ReportFinalPrintTime": False,
@@ -360,6 +370,7 @@ class OctoslackPlugin(
                     "ReportPrinterState": True,
                     "ReportEnvironment": False,
                     "ReportJobState": True,
+					"ReportJobUser": True,
                     "ReportJobOrigEstimate": False,
                     "ReportJobProgress": True,
                     "ReportFinalPrintTime": False,
@@ -381,6 +392,7 @@ class OctoslackPlugin(
                     "ReportPrinterState": True,
                     "ReportEnvironment": False,
                     "ReportJobState": True,
+					"ReportJobUser": True,
                     "ReportJobOrigEstimate": False,
                     "ReportJobProgress": False,
                     "ReportFinalPrintTime": False,
@@ -402,6 +414,7 @@ class OctoslackPlugin(
                     "ReportPrinterState": True,
                     "ReportEnvironment": False,
                     "ReportJobState": True,
+					"ReportJobUser": True,
                     "ReportJobOrigEstimate": True,
                     "ReportJobProgress": False,
                     "ReportFinalPrintTime": True,
@@ -424,6 +437,7 @@ class OctoslackPlugin(
                     "ReportPrinterState": True,
                     "ReportEnvironment": False,
                     "ReportJobState": True,
+					"ReportJobUser": True,
                     "ReportJobOrigEstimate": False,
                     "ReportJobProgress": True,
                     "ReportMovieStatus": False,
@@ -451,6 +465,7 @@ class OctoslackPlugin(
                     "ReportPrinterState": True,
                     "ReportEnvironment": False,
                     "ReportJobState": True,
+					"ReportJobUser": True,
                     "ReportJobOrigEstimate": False,
                     "ReportJobProgress": True,
                     "ReportMovieStatus": False,
@@ -472,6 +487,7 @@ class OctoslackPlugin(
                     "ReportPrinterState": True,
                     "ReportEnvironment": False,
                     "ReportJobState": False,
+					"ReportJobUser": True,
                     "ReportJobOrigEstimate": False,
                     "ReportJobProgress": False,
                     "ReportMovieStatus": False,
@@ -493,6 +509,7 @@ class OctoslackPlugin(
                     "ReportPrinterState": True,
                     "ReportEnvironment": False,
                     "ReportJobState": True,
+					"ReportJobUser": True,
                     "ReportJobOrigEstimate": True,
                     "ReportJobProgress": True,
                     "ReportMovieStatus": False,
@@ -513,6 +530,7 @@ class OctoslackPlugin(
                     "ReportPrinterState": True,
                     "ReportEnvironment": False,
                     "ReportJobState": True,
+					"ReportJobUser": True,
                     "ReportJobOrigEstimate": True,
                     "ReportJobProgress": True,
                     "ReportMovieStatus": False,
@@ -533,6 +551,7 @@ class OctoslackPlugin(
                     "ReportPrinterState": False,
                     "ReportEnvironment": False,
                     "ReportJobState": False,
+					"ReportJobUser": False,
                     "ReportJobOrigEstimate": False,
                     "ReportJobProgress": False,
                     "ReportMovieStatus": False,
@@ -553,6 +572,7 @@ class OctoslackPlugin(
                     "ReportPrinterState": False,
                     "ReportEnvironment": False,
                     "ReportJobState": False,
+					"ReportJobUser": False,
                     "ReportJobOrigEstimate": False,
                     "ReportJobProgress": False,
                     "ReportMovieStatus": False,
@@ -573,6 +593,7 @@ class OctoslackPlugin(
                     "ReportPrinterState": True,
                     "ReportEnvironment": False,
                     "ReportJobState": False,
+					"ReportJobUser": False,
                     "ReportJobOrigEstimate": False,
                     "ReportJobProgress": False,
                     "ReportMovieStatus": True,
@@ -593,6 +614,7 @@ class OctoslackPlugin(
                     "ReportPrinterState": True,
                     "ReportEnvironment": False,
                     "ReportJobState": False,
+					"ReportJobUser": False,
                     "ReportJobOrigEstimate": False,
                     "ReportJobProgress": False,
                     "ReportMovieStatus": True,
@@ -615,6 +637,7 @@ class OctoslackPlugin(
                     "ReportPrinterState": True,
                     "ReportEnvironment": False,
                     "ReportJobState": False,
+					"ReportJobUser": False,
                     "ReportJobOrigEstimate": False,
                     "ReportJobProgress": False,
                     "ReportMovieStatus": True,
@@ -1123,6 +1146,8 @@ class OctoslackPlugin(
             reportEnvironment = event_settings["ReportEnvironment"]
         if "ReportJobState" in event_settings:
             reportJobState = event_settings["ReportJobState"]
+		if "ReportJobUser" in event_settings:
+			reportJobUSer = event_settings["ReportJobUser"]
         if "ReportJobOrigEstimate" in event_settings:
             reportJobOrigEstimate = event_settings["ReportJobOrigEstimate"]
         if "ReportJobProgress" in event_settings:
@@ -1260,6 +1285,12 @@ class OctoslackPlugin(
             text_arr.append(
                 bold_text_start + "File" + bold_text_end + name_val_sep + jobStateStr
             )
+			
+		if reportJobUser:
+			jobUser_str = job_state["user"]
+            text_arr.append(
+                bold_text_start + "User" + bold_text_end + name_val_sep + jobUser_str
+            )
 
         if reportJobOrigEstimate:
             estimatedPrintTime = None
@@ -1344,7 +1375,7 @@ class OctoslackPlugin(
                 text_arr.append(
                     bold_text_start + "ETA" + bold_text_end + name_val_sep + eta_str
                 )
-
+		
             ##Is rendered as a footer so it's safe to always include this
         if reportPrinterState:
             printer_temps = self._printer.get_current_temperatures()
