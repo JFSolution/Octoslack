@@ -4,6 +4,10 @@
 ### Do not forget to adjust the following variables to your own plugin.
 
 # The plugin's identifier, has to be unique
+from __future__ import absolute_import
+from __future__ import print_function
+import sys
+
 plugin_identifier = "Octoslack"
 
 # The plugin's python package, should be "octoprint_<plugin identifier>", has to be unique
@@ -14,7 +18,7 @@ plugin_package = "octoprint_Octoslack"
 plugin_name = "Octoslack"
 
 # The plugin's version. Can be overwritten within OctoPrint's internal data via __plugin_version__ in the plugin module
-plugin_version = "1.9.2"
+plugin_version = "2.0.1"
 
 # The plugin's description. Can be overwritten within OctoPrint's internal data via __plugin_description__ in the plugin
 # module
@@ -27,14 +31,13 @@ plugin_author = "Chris Fraschetti"
 plugin_author_email = "fraschetti.dev@gmail.com"
 
 # The plugin's homepage URL. Can be overwritten within OctoPrint's internal data via __plugin_url__ in the plugin module
-plugin_url = "https://github.com/JFSolution/Octoslack"
+plugin_url = "https://github.com/fraschetti/Octoslack"
 
 # The plugin's license. Can be overwritten within OctoPrint's internal data via __plugin_license__ in the plugin module
 plugin_license = "MIT"
 
 # Any additional requirements besides OctoPrint should be listed here
 plugin_requires = [
-    "slackclient<2.0.0",
     "slacker",
     "tinys3",
     "imgurpython",
@@ -49,7 +52,16 @@ plugin_requires = [
     "pushover_complete",
     "rocket-python",
     "matrix_client",
+    "discord-webhook",
+    "pymsteams",
+    "six>=1.9.0",
 ]
+
+if sys.version[0] == "2":
+    plugin_requires.append("slackclient<2.0.0")
+else:
+    plugin_requires.append("slackclient>2.0.0")
+
 
 ### --------------------------------------------------------------------------------------------------------------------
 ### More advanced options that you usually shouldn't have to touch follow after this point

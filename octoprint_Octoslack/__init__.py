@@ -1,10 +1,9 @@
 # coding=utf-8
 # encoding: utf-8
-from __future__ import absolute_import
+from __future__ import absolute_import, division, print_function, unicode_literals
 from octoprint.util.version import get_octoprint_version_string
 from tempfile import mkstemp
 from datetime import timedelta
-from slackclient import SlackClient
 from slacker import Slacker, IncomingWebhook
 from imgurpython import ImgurClient
 from imgurpython.helpers.error import ImgurClientError, ImgurClientRateLimitError
@@ -18,16 +17,16 @@ from octoprint.util import RepeatedTimer
 from websocket import WebSocketConnectionClosedException
 from minio import Minio
 from sarge import run, Capture, shell_quote
+from discord_webhook import DiscordWebhook, DiscordEmbed
 import octoprint.util
 import octoprint.plugin
-import urllib2
+import six.moves.urllib.request, six.moves.urllib.error, six.moves.urllib.parse
 import datetime
 import base64
-import Queue
+import six.moves.queue
 import json
 import os
 import os.path
-import exceptions
 import uuid
 import time
 import datetime
@@ -41,6 +40,18 @@ import re
 import copy
 import netifaces
 import pytz
+import socket
+import pymsteams
+from six import unichr
+from six.moves import zip
+
+try:
+	# Python2
+	from slackclient import SlackClient
+except ImportError:
+	# Python3
+	import slack
+	import asyncio
 
 SLACKER_TIMEOUT = 60
 COMMAND_EXECUTION_WAIT = 10
@@ -65,6 +76,7 @@ class OctoslackPlugin(
 	##TODO ENHANCEMENT - Consider extending the progress snapshot minimum interval beyond Slack to other providers
 	##TODO ENHANCEMENT - Add Persoanl Token, emoji, avatar, and other formatting enhancements to Rocket.API once a library supports them (or update the libs yourself)
 	##TODO We've certainly moved past "it's time to refactor" line. Both the UI/JS/Python code need to be refactored
+	##TODO add multi-cam support: https://plugins.octoprint.org/plugins/multicam/
 
 	##~~ SettingsPlugin mixin
 
@@ -73,7 +85,10 @@ class OctoslackPlugin(
 			"connection_method": "APITOKEN",
 			"slack_apitoken_config": {
 				"api_token": "",
-				"alternate_bot_name": "",
+				"classic_bot": False,
+				"force_rtm": False,
+				"messages_query_delay": 1.2,
+				"alternate_bot_username": "",
 				"enable_commands": True,
 				"commands_positive_reaction": ":thumbsup:",
 				"commands_negative_reaction": ":thumbsdown:",
@@ -110,6 +125,12 @@ class OctoslackPlugin(
 				"user_id": "",
 				"channel": "",
 			},
+			"discord_config": {
+				"webhook_urls": "",
+				"alternate_username": "",
+				"avatar_url": "",
+			},
+			"teams_config": {"webhook_urls": ""},
 			"ignore_cancel_fail_event": True,
 			"mattermost_compatability_mode": False,
 			"include_raspi_temp": True,
@@ -151,7 +172,6 @@ class OctoslackPlugin(
 					"ReportJobState": False,
 					"ReportJobOrigEstimate": False,
 					"ReportJobProgress": False,
-					"ReportJobUser": False,
 					"ReportFinalPrintTime": False,
 					"ReportMovieStatus": False,
 					"IncludeSupportedCommands": True,
@@ -161,6 +181,7 @@ class OctoslackPlugin(
 					"CaptureCommandReturnCode": False,
 					"CaptureCommandOutput": False,
 					"Command": "",
+					"MinNotificationInterval": 0,
 				},
 				"Startup": {
 					"Enabled": False,
@@ -174,7 +195,6 @@ class OctoslackPlugin(
 					"ReportJobState": False,
 					"ReportJobOrigEstimate": False,
 					"ReportJobProgress": False,
-					"ReportJobUser": False,
 					"ReportFinalPrintTime": False,
 					"ReportMovieStatus": False,
 					"PushoverSound": "pushover",
@@ -183,6 +203,7 @@ class OctoslackPlugin(
 					"CaptureCommandReturnCode": False,
 					"CaptureCommandOutput": False,
 					"Command": "",
+					"MinNotificationInterval": 0,
 				},
 				"Shutdown": {
 					"Enabled": False,
@@ -196,7 +217,6 @@ class OctoslackPlugin(
 					"ReportJobState": False,
 					"ReportJobOrigEstimate": False,
 					"ReportJobProgress": False,
-					"ReportJobUser": False,
 					"ReportFinalPrintTime": False,
 					"ReportMovieStatus": False,
 					"PushoverSound": "pushover",
@@ -205,6 +225,7 @@ class OctoslackPlugin(
 					"CaptureCommandReturnCode": False,
 					"CaptureCommandOutput": False,
 					"Command": "",
+					"MinNotificationInterval": 0,
 				},
 				"Connecting": {
 					"Enabled": False,
@@ -216,7 +237,6 @@ class OctoslackPlugin(
 					"ReportPrinterState": True,
 					"ReportEnvironment": False,
 					"ReportJobState": False,
-					"ReportJobUser": False,
 					"ReportJobOrigEstimate": False,
 					"ReportJobProgress": False,
 					"ReportFinalPrintTime": False,
@@ -227,6 +247,7 @@ class OctoslackPlugin(
 					"CaptureCommandReturnCode": False,
 					"CaptureCommandOutput": False,
 					"Command": "",
+					"MinNotificationInterval": 0,
 				},
 				"Connected": {
 					"Enabled": False,
@@ -240,7 +261,6 @@ class OctoslackPlugin(
 					"ReportJobState": False,
 					"ReportJobOrigEstimate": False,
 					"ReportJobProgress": False,
-					"ReportJobUser": False,
 					"ReportFinalPrintTime": False,
 					"ReportMovieStatus": False,
 					"PushoverSound": "pushover",
@@ -249,6 +269,7 @@ class OctoslackPlugin(
 					"CaptureCommandReturnCode": False,
 					"CaptureCommandOutput": False,
 					"Command": "",
+					"MinNotificationInterval": 0,
 				},
 				"Disconnecting": {
 					"Enabled": False,
@@ -260,7 +281,6 @@ class OctoslackPlugin(
 					"ReportPrinterState": True,
 					"ReportEnvironment": False,
 					"ReportJobState": False,
-					"ReportJobUser": False,
 					"ReportJobOrigEstimate": False,
 					"ReportJobProgress": False,
 					"ReportFinalPrintTime": False,
@@ -271,6 +291,7 @@ class OctoslackPlugin(
 					"CaptureCommandReturnCode": False,
 					"CaptureCommandOutput": False,
 					"Command": "",
+					"MinNotificationInterval": 0,
 				},
 				"Disconnected": {
 					"Enabled": False,
@@ -282,7 +303,6 @@ class OctoslackPlugin(
 					"ReportPrinterState": True,
 					"ReportEnvironment": False,
 					"ReportJobState": False,
-					"ReportJobUser": False,
 					"ReportJobOrigEstimate": False,
 					"ReportJobProgress": False,
 					"ReportFinalPrintTime": False,
@@ -293,6 +313,7 @@ class OctoslackPlugin(
 					"CaptureCommandReturnCode": False,
 					"CaptureCommandOutput": False,
 					"Command": "",
+					"MinNotificationInterval": 0,
 				},
 				"Error": {
 					"Enabled": True,
@@ -304,7 +325,6 @@ class OctoslackPlugin(
 					"ReportPrinterState": True,
 					"ReportEnvironment": False,
 					"ReportJobState": False,
-					"ReportJobUser": False,
 					"ReportJobOrigEstimate": False,
 					"ReportJobProgress": False,
 					"ReportFinalPrintTime": False,
@@ -315,6 +335,7 @@ class OctoslackPlugin(
 					"CaptureCommandReturnCode": False,
 					"CaptureCommandOutput": False,
 					"Command": "",
+					"MinNotificationInterval": 0,
 				},
 				"PrintStarted": {
 					"Enabled": True,
@@ -327,7 +348,6 @@ class OctoslackPlugin(
 					"ReportEnvironment": False,
 					"ReportJobState": True,
 					"ReportJobOrigEstimate": True,
-					"ReportJobUser": True,
 					"ReportJobProgress": False,
 					"ReportFinalPrintTime": False,
 					"ReportMovieStatus": False,
@@ -337,6 +357,7 @@ class OctoslackPlugin(
 					"CaptureCommandReturnCode": False,
 					"CaptureCommandOutput": False,
 					"Command": "",
+					"MinNotificationInterval": 0,
 				},
 				"PrintFailed": {
 					"Enabled": True,
@@ -348,7 +369,6 @@ class OctoslackPlugin(
 					"ReportPrinterState": True,
 					"ReportEnvironment": False,
 					"ReportJobState": True,
-					"ReportJobUser": True,
 					"ReportJobOrigEstimate": False,
 					"ReportJobProgress": False,
 					"ReportFinalPrintTime": False,
@@ -359,6 +379,7 @@ class OctoslackPlugin(
 					"CaptureCommandReturnCode": False,
 					"CaptureCommandOutput": False,
 					"Command": "",
+					"MinNotificationInterval": 0,
 				},
 				"PrintCancelling": {
 					"Enabled": True,
@@ -370,7 +391,6 @@ class OctoslackPlugin(
 					"ReportPrinterState": True,
 					"ReportEnvironment": False,
 					"ReportJobState": True,
-					"ReportJobUser": True,
 					"ReportJobOrigEstimate": False,
 					"ReportJobProgress": True,
 					"ReportFinalPrintTime": False,
@@ -381,6 +401,7 @@ class OctoslackPlugin(
 					"CaptureCommandReturnCode": False,
 					"CaptureCommandOutput": False,
 					"Command": "",
+					"MinNotificationInterval": 0,
 				},
 				"PrintCancelled": {
 					"Enabled": True,
@@ -392,7 +413,6 @@ class OctoslackPlugin(
 					"ReportPrinterState": True,
 					"ReportEnvironment": False,
 					"ReportJobState": True,
-					"ReportJobUser": True,
 					"ReportJobOrigEstimate": False,
 					"ReportJobProgress": False,
 					"ReportFinalPrintTime": False,
@@ -403,6 +423,7 @@ class OctoslackPlugin(
 					"CaptureCommandReturnCode": False,
 					"CaptureCommandOutput": False,
 					"Command": "",
+					"MinNotificationInterval": 0,
 				},
 				"PrintDone": {
 					"Enabled": True,
@@ -414,7 +435,6 @@ class OctoslackPlugin(
 					"ReportPrinterState": True,
 					"ReportEnvironment": False,
 					"ReportJobState": True,
-					"ReportJobUser": True,
 					"ReportJobOrigEstimate": True,
 					"ReportJobProgress": False,
 					"ReportFinalPrintTime": True,
@@ -425,6 +445,7 @@ class OctoslackPlugin(
 					"CaptureCommandReturnCode": False,
 					"CaptureCommandOutput": False,
 					"Command": "",
+					"MinNotificationInterval": 0,
 				},
 				##Not a real event but we'll leverage the same config structure
 				"Progress": {
@@ -437,7 +458,6 @@ class OctoslackPlugin(
 					"ReportPrinterState": True,
 					"ReportEnvironment": False,
 					"ReportJobState": True,
-					"ReportJobUser": True,
 					"ReportJobOrigEstimate": False,
 					"ReportJobProgress": True,
 					"ReportMovieStatus": False,
@@ -447,12 +467,14 @@ class OctoslackPlugin(
 					"IntervalPct": 25,
 					"IntervalHeight": 0,
 					"IntervalTime": 0,
+					"TriggerHeight": 1.0,
 					"PushoverSound": "pushover",
 					"PushoverPriority": 0,
 					"CommandEnabled": False,
 					"CaptureCommandReturnCode": False,
 					"CaptureCommandOutput": False,
 					"Command": "",
+					"MinNotificationInterval": 0,
 				},
 				##Not a real event but we'll leverage the same config structure
 				"GcodeEvent": {
@@ -465,7 +487,6 @@ class OctoslackPlugin(
 					"ReportPrinterState": True,
 					"ReportEnvironment": False,
 					"ReportJobState": True,
-					"ReportJobUser": True,
 					"ReportJobOrigEstimate": False,
 					"ReportJobProgress": True,
 					"ReportMovieStatus": False,
@@ -475,6 +496,7 @@ class OctoslackPlugin(
 					"CaptureCommandReturnCode": False,
 					"CaptureCommandOutput": False,
 					"Command": "",
+					"MinNotificationInterval": 0,
 				},
 				##Not a real event but we'll leverage the same config structure
 				"Heartbeat": {
@@ -487,7 +509,6 @@ class OctoslackPlugin(
 					"ReportPrinterState": True,
 					"ReportEnvironment": False,
 					"ReportJobState": False,
-					"ReportJobUser": True,
 					"ReportJobOrigEstimate": False,
 					"ReportJobProgress": False,
 					"ReportMovieStatus": False,
@@ -498,6 +519,7 @@ class OctoslackPlugin(
 					"CaptureCommandReturnCode": False,
 					"CaptureCommandOutput": False,
 					"Command": "",
+					"MinNotificationInterval": 0,
 				},
 				"PrintPaused": {
 					"Enabled": True,
@@ -509,7 +531,6 @@ class OctoslackPlugin(
 					"ReportPrinterState": True,
 					"ReportEnvironment": False,
 					"ReportJobState": True,
-					"ReportJobUser": True,
 					"ReportJobOrigEstimate": True,
 					"ReportJobProgress": True,
 					"ReportMovieStatus": False,
@@ -519,6 +540,7 @@ class OctoslackPlugin(
 					"CaptureCommandReturnCode": False,
 					"CaptureCommandOutput": False,
 					"Command": "",
+					"MinNotificationInterval": 0,
 				},
 				"PrintResumed": {
 					"Enabled": True,
@@ -530,7 +552,6 @@ class OctoslackPlugin(
 					"ReportPrinterState": True,
 					"ReportEnvironment": False,
 					"ReportJobState": True,
-					"ReportJobUser": True,
 					"ReportJobOrigEstimate": True,
 					"ReportJobProgress": True,
 					"ReportMovieStatus": False,
@@ -540,6 +561,7 @@ class OctoslackPlugin(
 					"CaptureCommandReturnCode": False,
 					"CaptureCommandOutput": False,
 					"Command": "",
+					"MinNotificationInterval": 0,
 				},
 				"MetadataAnalysisStarted": {
 					"Enabled": False,
@@ -551,7 +573,6 @@ class OctoslackPlugin(
 					"ReportPrinterState": False,
 					"ReportEnvironment": False,
 					"ReportJobState": False,
-					"ReportJobUser": False,
 					"ReportJobOrigEstimate": False,
 					"ReportJobProgress": False,
 					"ReportMovieStatus": False,
@@ -561,6 +582,7 @@ class OctoslackPlugin(
 					"CaptureCommandReturnCode": False,
 					"CaptureCommandOutput": False,
 					"Command": "",
+					"MinNotificationInterval": 0,
 				},
 				"MetadataAnalysisFinished": {
 					"Enabled": False,
@@ -572,7 +594,6 @@ class OctoslackPlugin(
 					"ReportPrinterState": False,
 					"ReportEnvironment": False,
 					"ReportJobState": False,
-					"ReportJobUser": False,
 					"ReportJobOrigEstimate": False,
 					"ReportJobProgress": False,
 					"ReportMovieStatus": False,
@@ -582,6 +603,7 @@ class OctoslackPlugin(
 					"CaptureCommandReturnCode": False,
 					"CaptureCommandOutput": False,
 					"Command": "",
+					"MinNotificationInterval": 0,
 				},
 				"MovieRendering": {
 					"Enabled": False,
@@ -593,7 +615,6 @@ class OctoslackPlugin(
 					"ReportPrinterState": True,
 					"ReportEnvironment": False,
 					"ReportJobState": False,
-					"ReportJobUser": False,
 					"ReportJobOrigEstimate": False,
 					"ReportJobProgress": False,
 					"ReportMovieStatus": True,
@@ -603,6 +624,7 @@ class OctoslackPlugin(
 					"CaptureCommandReturnCode": False,
 					"CaptureCommandOutput": False,
 					"Command": "",
+					"MinNotificationInterval": 0,
 				},
 				"MovieDone": {
 					"Enabled": False,
@@ -614,7 +636,6 @@ class OctoslackPlugin(
 					"ReportPrinterState": True,
 					"ReportEnvironment": False,
 					"ReportJobState": False,
-					"ReportJobUser": False,
 					"ReportJobOrigEstimate": False,
 					"ReportJobProgress": False,
 					"ReportMovieStatus": True,
@@ -626,6 +647,7 @@ class OctoslackPlugin(
 					"CaptureCommandReturnCode": False,
 					"CaptureCommandOutput": False,
 					"Command": "",
+					"MinNotificationInterval": 0,
 				},
 				"MovieFailed": {
 					"Enabled": False,
@@ -637,7 +659,6 @@ class OctoslackPlugin(
 					"ReportPrinterState": True,
 					"ReportEnvironment": False,
 					"ReportJobState": False,
-					"ReportJobUser": False,
 					"ReportJobOrigEstimate": False,
 					"ReportJobProgress": False,
 					"ReportMovieStatus": True,
@@ -647,6 +668,7 @@ class OctoslackPlugin(
 					"CaptureCommandReturnCode": False,
 					"CaptureCommandOutput": False,
 					"Command": "",
+					"MinNotificationInterval": 0,
 				},
 			},
 			"gcode_events": "",
@@ -682,18 +704,33 @@ class OctoslackPlugin(
 		)
 
 	def get_settings_version(self):
-		return 1
+		return 2
+
+	def on_settings_migrate(self, target, current=None):
+		if current == None:
+			return
+
+		if current < 2:  ##All 1 --> 2 changes
+			existing_alt_username = self._settings.get(
+				["slack_identity"], merged=True
+			).get("username")
+			if existing_alt_username:
+				self._settings.set(
+					["slack_apitoken_config", "alternate_bot_username"],
+					existing_alt_username,
+				)
 
 	def on_settings_save(self, data):
 		try:
 			octoprint.plugin.SettingsPlugin.on_settings_save(self, data)
+			self.start_bot_listener()
 			self.update_progress_timer()
 			self.update_heartbeat_timer()
 			self.update_gcode_sent_listeners()
 			self._slack_next_progress_snapshot_time = 0
 		except Exception as e:
 			self._logger.exception(
-				"Error executing post-save actions, Error: " + str(e.message)
+				"Error executing post-save actions, Error: " + str(e)
 			)
 
 	##~ TemplatePlugin mixin
@@ -736,10 +773,7 @@ class OctoslackPlugin(
 		##~~ StartupPlugin mixin
 
 	def on_after_startup(self):
-		self._logger.debug("Entering Slack RTM client init logic")
-		self.start_rtm_client()
-		self._logger.debug("Exited Slack RTM client init logic")
-
+		self.start_bot_listener()
 		self.update_gcode_sent_listeners()
 
 		self.start_heartbeat_timer()
@@ -747,9 +781,9 @@ class OctoslackPlugin(
 		##~~ ShutdownPlugin mixin
 
 	def on_shutdown(self):
-		self.stop_rtm_client()
+		self.stop_bot_listener()
 
-		self._logger.debug("Stopped Slack RTM client")
+		self._logger.debug("Stopped Slack bot client")
 
 		self.stop_progress_timer()
 		self.stop_heartbeat_timer()
@@ -760,8 +794,8 @@ class OctoslackPlugin(
 		try:
 			progress_interval = int(
 				self._settings.get(["supported_events"], merged=True)
-				.get("Progress")
-				.get("IntervalPct")
+					.get("Progress")
+					.get("IntervalPct")
 			)
 
 			self._logger.debug(
@@ -772,18 +806,16 @@ class OctoslackPlugin(
 			)
 
 			if (
-				progress > 0
-				and progress < 100
-				and progress_interval > 0
-				and progress % progress_interval == 0
+					progress > 0
+					and progress < 100
+					and progress_interval > 0
+					and progress % progress_interval == 0
 			):
 				self.handle_event(
 					"Progress", None, {"progress": progress}, False, False, None
 				)
 		except Exception as e:
-			self._logger.exception(
-				"Error processing progress event, Error: " + str(e.message)
-			)
+			self._logger.exception("Error processing progress event, Error: " + str(e))
 
 			##~~ EventPlugin mixin
 
@@ -808,9 +840,9 @@ class OctoslackPlugin(
 		progress_timer_interval = int(progress_event.get("IntervalTime"))
 
 		if (
-			progress_timer_interval > 0
-			and (self._printer.is_printing() or self._printer.is_paused())
-			and not self._printer.is_ready()
+				progress_timer_interval > 0
+				and (self._printer.is_printing() or self._printer.is_paused())
+				and not self._printer.is_ready()
 		):
 			self._logger.debug(
 				"Starting progress timer: " + str(progress_timer_interval) + "min(s)"
@@ -844,7 +876,7 @@ class OctoslackPlugin(
 				##OctoPrint wraps the interval in a lambda function
 				if callable(existing_interval):
 					existing_interval = existing_interval()
-				existing_interval = existing_interval / 60
+				existing_interval = int(existing_interval / 60)
 
 				self._logger.debug("New progress interval: " + str(new_interval))
 				self._logger.debug(
@@ -915,7 +947,7 @@ class OctoslackPlugin(
 				##OctoPrint wraps the interval in a lambda function
 				if callable(existing_interval):
 					existing_interval = existing_interval()
-				existing_interval = existing_interval / 60
+				existing_interval = int(existing_interval / 60)
 
 				self._logger.debug("New heartbeat interval: " + str(new_interval))
 				self._logger.debug(
@@ -936,6 +968,7 @@ class OctoslackPlugin(
 			self.heartbeat_timer = None
 
 	last_trigger_height = 0.0
+	triggerd_for_height = False
 
 	def process_zheight_change(self, payload):
 		if not self._printer.is_printing():
@@ -943,65 +976,115 @@ class OctoslackPlugin(
 		if not "new" in payload:
 			return False
 
+		if process_height_intervall(payload) or process_height_trigger(payload):
+			self.handle_event("Progress", None, payload, False, False, None)
+
+
+	def process_height_intervall(self, payload):
 		height_interval = float(
 			self._settings.get(["supported_events"], merged=True)
-			.get("Progress")
-			.get("IntervalHeight")
+				.get("Progress")
+				.get("IntervalHeight")
 		)
 		if height_interval <= 0:
 			return False
+		else:
+			new = payload["new"]
+			if new <= self.last_trigger_height:
+				return False
 
-		new = payload["new"]
-		if new <= self.last_trigger_height:
+			if new >= (self.last_trigger_height + height_interval):
+				self._logger.debug(
+					"ZChange interval: "
+					+ str(height_interval)
+					+ ", Last trigger height: "
+					+ str(self.last_trigger_height)
+					+ ", Payload: "
+					+ json.dumps(payload)
+				)
+				self.last_trigger_height = new
+				return True
+
 			return False
 
-		if new >= (self.last_trigger_height + height_interval):
-			self._logger.debug(
-				"ZChange interval: "
-				+ str(height_interval)
-				+ ", Last trigger height: "
-				+ str(self.last_trigger_height)
-				+ ", Payload: "
-				+ json.dumps(payload)
-			)
-			self.last_trigger_height = new
-			return True
+	def process_height_trigger(self, payload):
+		height_trigger = float(
+			self._settings.get(["supported_events"], merged=True)
+				.get("Progress")
+				.get("TriggerHeight")
+		)
+		if height_trigger:
+			return False
+		else:
+			new = payload["new"]
+			if new <= self.triggerd_for_height:
+				return False
 
-		return False
+			if new >= height_trigger:
+				self._logger.debug(
+					"ZChange trigger: "
+					+ str(height_trigger)
+					+ ", already Triggerd for height: "
+					+ str(self.triggerd_for_height)
+					+ ", Payload: "
+					+ json.dumps(payload)
+				)
+				self.triggerd_for_height = True
+				return True
+
+			return False
 
 	def on_event(self, event, payload):
 		self.handle_event(event, None, payload, False, False, None)
 
+	event_last_processed = {}  ##event --> timestamp map
+
+	def clear_event_last_processed(self):
+		self.event_last_processed = {}
+
 	def handle_event(
-		self,
-		event,
-		channel_override,
-		payload,
-		override_notification_enabled_check,
-		override_command_enabled_check,
-		event_settings_overrides,
+			self,
+			event,
+			channel_override,
+			payload,
+			override_notification_enabled_check,
+			override_command_enabled_check,
+			event_settings_overrides,
 	):
+		if not payload:
+			payload = {}
+
 		try:
-			if event == "PrintCancelled":
+			if event == "PrintCancelling":
+				payload["slack_rtm_user"] = self.slack_cmd_stop_user
+			elif event == "PrintCancelled":
 				self.stop_progress_timer()
 				self.print_cancel_time = time.time()
 				self._bot_progress_last_req = None
 				with self._bot_progress_last_snapshot_queue.mutex:
 					self._bot_progress_last_snapshot_queue.queue.clear()
+				payload["slack_rtm_user"] = self.slack_cmd_stop_user
+				self.slack_cmd_stop_user = None
+				self.slack_cmd_pause_user = None
+				self.slack_cmd_resume_user = None
+				self.clear_event_last_processed()
 			elif event == "PrintFailed":
 				self.stop_progress_timer()
 				self._bot_progress_last_req = None
 				with self._bot_progress_last_snapshot_queue.mutex:
 					self._bot_progress_last_snapshot_queue.queue.clear()
-
+				self.slack_cmd_stop_user = None
+				self.slack_cmd_pause_user = None
+				self.slack_cmd_resume_user = None
+				self.clear_event_last_processed()
 				ignore_cancel_fail_event = self._settings.get(
 					["ignore_cancel_fail_event"], merged=True
 				)
 				##If the ignore flag is enabled and we've seen a PrintCancelled within 30s, ignore the PrintFailed event
 				if (
-					ignore_cancel_fail_event
-					and not self.print_cancel_time == None
-					and (time.time() - self.print_cancel_time) < 30
+						ignore_cancel_fail_event
+						and not self.print_cancel_time == None
+						and (time.time() - self.print_cancel_time) < 30
 				):
 					self._logger.debug(
 						"Ignoring PrintFailed event within accecptable window of a PrintCancelled event"
@@ -1011,16 +1094,31 @@ class OctoslackPlugin(
 				self.start_progress_timer()
 				self.print_cancel_time = None
 				self.last_trigger_height = 0.0
+				self.triggerd_for_height = False
 				self._bot_progress_last_req = None
 				with self._bot_progress_last_snapshot_queue.mutex:
 					self._bot_progress_last_snapshot_queue.queue.clear()
 				self._slack_next_progress_snapshot_time = 0
+				##TODO Remove if start is ever added to the supported Slack commands
+				self.slack_cmd_stop_user = None
+				self.slack_cmd_pause_user = None
+				self.slack_cmd_resume_user = None
+			elif event == "PrintPaused":
+				payload["slack_rtm_user"] = self.slack_cmd_pause_user
+				self.slack_cmd_pause_user = None
+			elif event == "PrintResumed":
+				payload["slack_rtm_user"] = self.slack_cmd_resume_user
+				self.slack_cmd_resume_user = None
 			elif event == "PrintDone":
 				self.stop_progress_timer()
 				self.print_cancel_time = None
 				self._bot_progress_last_req = None
 				with self._bot_progress_last_snapshot_queue.mutex:
 					self._bot_progress_last_snapshot_queue.queue.clear()
+				self.slack_cmd_stop_user = None
+				self.slack_cmd_pause_user = None
+				self.slack_cmd_resume_user = None
+				self.clear_event_last_processed()
 			elif event == "ZChange":
 				if self.process_zheight_change(payload):
 					self.handle_event("Progress", None, payload, False, False, None)
@@ -1030,10 +1128,24 @@ class OctoslackPlugin(
 				if payload and "result" in payload:
 					analysis_result = payload["result"]
 					if (
-						"analysisPending" in analysis_result
-						and analysis_result["analysisPending"]
+							"analysisPending" in analysis_result
+							and analysis_result["analysisPending"]
 					):
 						return
+			elif event.lower() == "plugin_octolapse_movie_done":
+
+				self._logger.debug(
+					"Got Octolapse 'Timelapse Done' Event. Forwarding to 'MovieDone'"
+				)
+				self.handle_event(
+					"MovieDone",
+					channel_override,
+					payload,
+					override_notification_enabled_check,
+					override_command_enabled_check,
+					event_settings_overrides,
+				)
+				return
 
 			supported_events = self._settings.get(["supported_events"], merged=True)
 			if supported_events == None or not event in supported_events:
@@ -1049,10 +1161,10 @@ class OctoslackPlugin(
 					event_settings[key] = event_settings_overrides[key]
 
 			notification_enabled = (
-				override_notification_enabled_check or event_settings["Enabled"]
+					override_notification_enabled_check or event_settings["Enabled"]
 			)
 			command_enabled = (
-				override_command_enabled_check or event_settings["CommandEnabled"]
+					override_command_enabled_check or event_settings["CommandEnabled"]
 			)
 
 			if not notification_enabled and not command_enabled:
@@ -1061,6 +1173,20 @@ class OctoslackPlugin(
 			if payload == None:
 				payload = {}
 
+			last_processed_key = event
+			if event == "GcodeEvent":
+				last_processed_key = event + "_" + event_settings["InternalName"]
+
+			last_processed_time = 0
+			if last_processed_key in self.event_last_processed:
+				last_processed_time = self.event_last_processed[last_processed_key]
+
+			min_notification_interval = 0
+			if "MinNotificationInterval" in event_settings:
+				min_notification_interval = int(
+					event_settings["MinNotificationInterval"]
+				)
+
 			self._logger.debug(
 				"Event: "
 				+ event
@@ -1068,8 +1194,61 @@ class OctoslackPlugin(
 				+ str(notification_enabled)
 				+ ", CommandEnabled: "
 				+ str(command_enabled)
+				+ ", OverrideNotificationEnabledCheck: "
+				+ str(override_notification_enabled_check)
+				+ ", LastProcessedKey: "
+				+ str(last_processed_key)
+				+ ", LastProcessedTime: "
+				+ str(last_processed_time)
+				+ ", MinNotificationInterval: "
+				+ str(min_notification_interval)
 				+ ", Payload: "
 				+ str(payload)
+			)
+
+			if (
+					min_notification_interval > 0
+					and last_processed_time > 0
+					and not override_notification_enabled_check
+			):
+				now = time.time()
+
+				next_process_time = last_processed_time + (
+						min_notification_interval * 60
+				)
+
+				self._logger.debug(
+					"Evaluating min notification interval - Event: "
+					+ event
+					+ ", LastProcessedKey: "
+					+ str(last_processed_key)
+					+ ", MinNotificationInterval: "
+					+ str(min_notification_interval)
+					+ ", LastProcessedTime: "
+					+ str(last_processed_time)
+					+ ", NextProcessTime: "
+					+ str(next_process_time)
+					+ ", Now: "
+					+ str(now)
+				)
+
+				if now < next_process_time:
+					self._logger.debug(
+						"Ignoring "
+						+ event
+						+ " event to satisfy min notification interval"
+					)
+					return
+
+			new_last_processed_time = time.time()
+			self.event_last_processed[last_processed_key] = new_last_processed_time
+			self._logger.debug(
+				"Updating Event last processed time: "
+				+ event
+				+ ", LastProcessedKey: "
+				+ str(last_processed_key)
+				+ ", NewLastProcessedTime: "
+				+ str(new_last_processed_time)
 			)
 
 			self.process_slack_event(
@@ -1082,7 +1261,7 @@ class OctoslackPlugin(
 			)
 		except Exception as e:
 			self._logger.exception(
-				"Error processing event: " + event + ", Error: " + str(e.message)
+				"Error processing event: " + event + ", Error: " + str(e)
 			)
 
 	def get_origin_text(self, print_origin):
@@ -1096,13 +1275,13 @@ class OctoslackPlugin(
 		return print_origin
 
 	def process_slack_event(
-		self,
-		event,
-		event_settings,
-		channel_override,
-		event_payload,
-		notification_enabled,
-		command_enabled,
+			self,
+			event,
+			event_settings,
+			channel_override,
+			event_payload,
+			notification_enabled,
+			command_enabled,
 	):
 		fallback = ""
 		pretext = ""
@@ -1127,7 +1306,7 @@ class OctoslackPlugin(
 		)
 
 		if (
-			channel_override == None or len(channel_override.strip()) == 0
+				channel_override == None or len(channel_override.strip()) == 0
 		) and "ChannelOverride" in event_settings:
 			channel_override = event_settings["ChannelOverride"]
 		if "Fallback" in event_settings:
@@ -1146,8 +1325,6 @@ class OctoslackPlugin(
 			reportEnvironment = event_settings["ReportEnvironment"]
 		if "ReportJobState" in event_settings:
 			reportJobState = event_settings["ReportJobState"]
-		if "ReportJobUser" in event_settings:
-			reportJobUser = event_settings["ReportJobUser"]
 		if "ReportJobOrigEstimate" in event_settings:
 			reportJobOrigEstimate = event_settings["ReportJobOrigEstimate"]
 		if "ReportJobProgress" in event_settings:
@@ -1169,7 +1346,11 @@ class OctoslackPlugin(
 			"{error}": "N/A",
 			"{cmd}": "N/A",
 			"{ip_address}": "N/A",
+			"{hostname}": "N/A",
+			"{fqdn}": "N/A",
 			"{printer_status}": "N/A",
+			"{octoprint_user}": "N/A",
+			"{slack_user}": "N/A",
 		}
 
 		printer_data = self._printer.get_current_data()
@@ -1266,6 +1447,15 @@ class OctoslackPlugin(
 		if event == "Heartbeat" and self._printer.is_closed_or_error():
 			color = "danger"
 
+		octoprint_user = None
+		if "user" in job_state and job_state["user"]:
+			octoprint_user = job_state["user"]
+			replacement_params["{octoprint_user}"] = octoprint_user
+
+		slack_user = None
+		if "slack_rtm_user" in event_payload and event_payload["slack_rtm_user"]:
+			replacement_params["{slack_user}"] = slack_user
+
 		if reportJobState:
 			print_origin = job_state["file"]["origin"]
 			print_origin = self.get_origin_text(print_origin)
@@ -1277,7 +1467,7 @@ class OctoslackPlugin(
 
 			if file_bytes > 0:
 				jobStateStr = (
-					file_name + " (" + file_size + " via " + print_origin + ")"
+						file_name + " (" + file_size + " via " + print_origin + ")"
 				)
 			else:
 				jobStateStr = file_name
@@ -1286,11 +1476,32 @@ class OctoslackPlugin(
 				bold_text_start + "File" + bold_text_end + name_val_sep + jobStateStr
 			)
 
-		if reportJobUser:
-			jobUser_str = job_state["user"]
+			if octoprint_user:
+				octoprint_user_label = "User"
+				if (
+						"slack_rtm_user" in event_payload
+						and event_payload["slack_rtm_user"]
+				):
+					octoprint_user_label = "OctoPrint User"
+				text_arr.append(
+					bold_text_start
+					+ octoprint_user_label
+					+ bold_text_end
+					+ name_val_sep
+					+ octoprint_user
+				)
+
+		slack_user = None
+		if "slack_rtm_user" in event_payload and event_payload["slack_rtm_user"]:
+			slack_user = event_payload["slack_rtm_user"]
 			text_arr.append(
-				bold_text_start + "User" + bold_text_end + name_val_sep + jobUser_str
+				bold_text_start
+				+ "Slack User"
+				+ bold_text_end
+				+ name_val_sep
+				+ event_payload["slack_rtm_user"]
 			)
+			replacement_params["{slack_user}"] = slack_user
 
 		if reportJobOrigEstimate:
 			estimatedPrintTime = None
@@ -1381,18 +1592,19 @@ class OctoslackPlugin(
 			printer_temps = self._printer.get_current_temperatures()
 
 			temp_str = ""
+			nozzle_temps = []
 			if not printer_temps == None and "bed" in printer_temps:
 				temp_str = ""
 				for key in printer_temps:
 					if key == "bed":
 						temp_str += (
-							", Bed: "
-							+ str(printer_temps["bed"]["actual"])
-							+ unichr(176)
-							+ "C/"
-							+ str(printer_temps["bed"]["target"])
-							+ unichr(176)
-							+ "C"
+								", Bed: "
+								+ str(printer_temps["bed"]["actual"])
+								+ unichr(176)
+								+ "C/"
+								+ str(printer_temps["bed"]["target"])
+								+ unichr(176)
+								+ "C"
 						)
 					elif key.startswith("tool"):
 						nozzle_name = "Nozzle"
@@ -1410,27 +1622,43 @@ class OctoslackPlugin(
 								)
 							)
 						else:
+							nozzle_name += key[4:]
 
-							if len(printer_temps) > 2:
-								nozzle_name += key[4:]
-
-							temp_str += (
-								", "
-								+ nozzle_name
-								+ ": "
-								+ str(printer_temps[key]["actual"])
-								+ unichr(176)
-								+ "C/"
-								+ str(printer_temps[key]["target"])
-								+ unichr(176)
-								+ "C"
+							nozzle_temps.append(
+								(
+									nozzle_name,
+									printer_temps[key]["actual"],
+									printer_temps[key]["target"],
+								)
 							)
+
+			for nozzle_temp in nozzle_temps:
+				if len(temp_str) > 0:
+					temp_str += ", "
+
+				nozzle_name = nozzle_temp[0]
+				actual_temp = nozzle_temp[1]
+				target_temp = nozzle_temp[2]
+
+				if len(nozzle_temps) == 1:
+					nozzle_name = "Nozzle"
+
+				temp_str += (
+						nozzle_name
+						+ ": "
+						+ str(actual_temp)
+						+ unichr(176)
+						+ "C/"
+						+ str(target_temp)
+						+ unichr(176)
+						+ "C"
+				)
 
 			footer = "Printer: " + printer_text + temp_str + z_height_str
 
 		##Skip this if not sending a notification (not current available for command execution)
 		if notification_enabled and self._settings.get(
-			["include_raspi_temp"], merged=True
+				["include_raspi_temp"], merged=True
 		):
 
 			rpi_tmp = None
@@ -1513,6 +1741,8 @@ class OctoslackPlugin(
 		ips = self.get_ips()
 		ips_str = ", ".join(ips)
 		replacement_params["{ip_address}"] = ips_str
+		replacement_params["{hostname}"] = self.get_hostname()
+		replacement_params["{fqdn}"] = self.get_fqdn()
 
 		if includeSupportedCommands:
 			enabled_commands = self._settings.get(
@@ -1609,6 +1839,9 @@ class OctoslackPlugin(
 			text = newline.join(text_arr)
 
 		for param in replacement_params:
+			if replacement_params[param] == None:
+				continue
+
 			if not fallback == None:
 				fallback = fallback.replace(param, replacement_params[param])
 			if not pretext == None:
@@ -1637,27 +1870,28 @@ class OctoslackPlugin(
 		capture_command_output = False
 
 		if (
-			notification_enabled
-			and "CaptureCommandReturnCode" in event_settings
-			and event_settings["CaptureCommandReturnCode"]
+				notification_enabled
+				and "CaptureCommandReturnCode" in event_settings
+				and event_settings["CaptureCommandReturnCode"]
 		):
 			capture_command_returncode = True
 
 		if (
-			notification_enabled
-			and "CaptureCommandOutput" in event_settings
-			and event_settings["CaptureCommandOutput"]
+				notification_enabled
+				and "CaptureCommandOutput" in event_settings
+				and event_settings["CaptureCommandOutput"]
 		):
 			capture_command_output = True
 
 		command_thread = None
 		command_thread_rsp = None
 		if command_enabled:
-			command_thread_rsp = Queue.Queue()
+			command_thread_rsp = six.moves.queue.Queue()
 			command_thread = threading.Thread(
 				target=self.execute_command,
 				args=(event, command, capture_command_output, command_thread_rsp),
 			)
+			command_thread.daemon = True
 			command_thread.start()
 
 		##Execute notification send
@@ -1684,6 +1918,7 @@ class OctoslackPlugin(
 					capture_command_output,
 				),
 			)
+			notification_thread.daemon = True
 			notification_thread.start()
 
 	# Currrently only querying IPv4 although the library supports IPv6 as well
@@ -1703,11 +1938,57 @@ class OctoslackPlugin(
 
 		return ips
 
+	def get_hostname(self):
+		try:
+			return socket.gethostname()
+		except Exception as e:
+			self._logger.exception("Failed to query hostname: " + str(e))
+
+		return "Hostname detection error"
+
+	def get_fqdn(self):
+		try:
+			return socket.getfqdn()
+		except Exception as e:
+			self._logger.exception("Failed to query fqdn: " + str(e))
+
+		return "Fqdn detection error"
+
+	def start_bot_listener(self):
+		if self.use_slack_web_api():
+			self._logger.debug("Entering Slack Web API client init logic")
+			t = threading.Thread(target=self.start_web_api_client, args=())
+			self._logger.debug("Exited Slack Web API client init logic")
+		else:
+			self._logger.debug("Entering Slack RTM client init logic")
+			t = threading.Thread(target=self.start_rtm_client, args=())
+			self._logger.debug("Exited Slack RTM client init logic")
+
+		t.daemon = True
+		t.start()
+
+	def stop_bot_listener(self):
+		self.stop_rtm_client()
+		self.stop_web_api_client()
+
+	slack_rtm_v2 = None
+	slack_rtm_v2_registered = False
+
+	def use_slack_web_api(self):
+		classic_bot = self._settings.get(["slack_apitoken_config"], merged=True).get(
+			"classic_bot"
+		)
+		force_rtm = self._settings.get(["slack_apitoken_config"], merged=True).get(
+			"force_rtm"
+		)
+
+		return not classic_bot or not force_rtm
+
 	def start_rtm_client(self):
 		self.stop_rtm_client()
 
 		if not self._settings.get(["slack_apitoken_config"], merged=True).get(
-			"enable_commands"
+				"enable_commands"
 		):
 			return
 
@@ -1724,15 +2005,36 @@ class OctoslackPlugin(
 				"Cannot enable real time messaging client for responding to commands without an API Key"
 			)
 			return
+
 		slackAPIToken = slackAPIToken.strip()
 
 		self._logger.debug("Before Slack RTM client start")
 
 		self.rtm_keep_running = True
+		self.slack_rtm_v2 = None
 		self.bot_user_id = None
 
-		t = threading.Thread(target=self.execute_rtm_loop, args=(slackAPIToken,))
-		t.setDaemon(True)
+		try:
+			# Python2
+			type(SlackClient)
+			t = threading.Thread(target=self.execute_rtm_loop_v1, args=(slackAPIToken,))
+		except NameError:
+			if not self.slack_rtm_v2_registered:
+				self.slack_rtm_v2_registered = True
+
+				dec_func = slack.RTMClient.run_on(event="open")
+				dec_func(self.process_rtm_v2_message)
+
+				dec_func = slack.RTMClient.run_on(event="close")
+				dec_func(self.process_rtm_v2_message)
+
+				dec_func = slack.RTMClient.run_on(event="message")
+				dec_func(self.process_rtm_v2_message)
+
+			# Python3
+			t = threading.Thread(target=self.execute_rtm_loop_v2, args=(slackAPIToken,))
+
+		t.daemon = True
 		t.start()
 
 		self._logger.debug("After Slack RTM client start")
@@ -1741,20 +2043,80 @@ class OctoslackPlugin(
 		self._logger.debug("Stopping Slack RTM client")
 		self.rtm_keep_running = False
 
-	def execute_rtm_loop(self, slackAPIToken):
+		if self.slack_rtm_v2:
+			try:
+				self.slack_rtm_v2.stop()
+			except Exception as e:
+				self._logger.exception(
+					"Failed to stop Slack RTM (v2) client: " + str(e)
+				)
+
+	web_api_keep_running = False
+	web_api_running = False
+
+	def start_web_api_client(self):
+		self.stop_web_api_client()
+
+		if not self._settings.get(["slack_apitoken_config"], merged=True).get(
+				"enable_commands"
+		):
+			return
+
+		self._logger.debug("Starting Slack Web API client")
+
+		connection_method = self.connection_method()
+		if connection_method == None or connection_method != "APITOKEN":
+			self._logger.debug("Slack Web API client not enabled")
+			return
+
+		slackAPIToken = self._settings.get(["slack_apitoken_config"], merged=True).get(
+			"api_token"
+		)
+		if not slackAPIToken:
+			self._logger.warn(
+				"Cannot enable Slack Web API client for responding to commands without an API Key"
+			)
+			return
+
+		slackAPIToken = slackAPIToken.strip()
+
+		self._logger.debug("Before Slack Web API client start")
+
+		self.web_api_keep_running = True
+		self.web_api_running = False
+		self.bot_user_id = None
+
+		t = threading.Thread(target=self.execute_web_api_loop, args=(slackAPIToken,))
+		t.daemon = True
+		t.start()
+
+		self._logger.debug("After Slack Web API client start")
+
+	def stop_web_api_client(self):
+		self._logger.debug("Stopping Slack Web API client")
+		self.web_api_keep_running = False
+
+		while self.web_api_running:
+			time.sleep(0.1)
+
+		self.bot_channels = None
+		self.bot_conversations_map = {}
+		self.last_conversations_ts = {}
+
+	def execute_rtm_loop_v1(self, slackAPIToken):
 		try:
-			ping_interval = 5
+			ping_interval = 30
 
-			self._logger.debug("Starting Slack RTM wait loop")
+			self._logger.debug("Starting Slack RTM (v1) wait loop")
 
-			sc = None
+			slack_rtm_v1 = None
 			connection_attempt = 0
 			next_ping = 0
 
 			repeat_error_count = 0
 
 			while self.rtm_keep_running:
-				while sc == None or not sc.server.connected:
+				while slack_rtm_v1 == None or not slack_rtm_v1.server.connected:
 					try:
 						##Reset read error count if we're reconnecting
 						repeat_error_count = 0
@@ -1764,7 +2126,7 @@ class OctoslackPlugin(
 							connection_attempt = 0
 
 						self._logger.debug(
-							"Attempting to connect Slack RTM API (iteration="
+							"Attempting to connect Slack RTM (v1) API (iteration="
 							+ str(connection_attempt)
 							+ ")"
 						)
@@ -1775,7 +2137,7 @@ class OctoslackPlugin(
 							self._logger.debug(
 								"Sleeping for "
 								+ str(wait_delay)
-								+ " seconds before attempting connection"
+								+ " seconds before attempting Slack RTM (v1) connection"
 							)
 							time.sleep(wait_delay)
 
@@ -1785,70 +2147,116 @@ class OctoslackPlugin(
 
 						auth_rsp = slackAPIConnection.auth.test()
 						self._logger.debug(
-							"Slack RTM API Key auth test response: "
+							"Slack RTM (v1) API Key auth test response: "
 							+ json.dumps(auth_rsp.body)
 						)
 
 						if auth_rsp.successful == None or auth_rsp.successful == False:
 							self._logger.error(
-								"Slack RTM API Key auth test failed: "
+								"Slack RTM (v1) API Key auth test failed: "
 								+ json.dumps(auth_rsp.body)
 							)
 							connection_attempt += 1
 							continue
 
 						self.bot_user_id = auth_rsp.body["user_id"]
-						self._logger.debug("Slack RTM Bot user id: " + self.bot_user_id)
+						self._logger.debug(
+							"Slack RTM (v1) Bot user id: " + self.bot_user_id
+						)
 
 						##Slack's client doesn't expose the underlying websocket/socket
 						##so we unfortunately need to rely on Python's GC to handle
 						##the socket disconnect
-						sc = SlackClient(slackAPIToken)
-						if sc.rtm_connect(with_team_state=False):
+						slack_rtm_v1 = SlackClient(slackAPIToken)
+						if slack_rtm_v1.rtm_connect(with_team_state=False):
 							self._logger.debug(
-								"Successfully reconnected via Slack RTM API"
+								"Successfully reconnected via Slack RTM (v1) API"
 							)
 							connection_attempt = 0
 							next_ping = time.time() + ping_interval
 						else:
-							self._logger.error("Failed to reconnect via Slack RTM API")
+							self._logger.error(
+								"Failed to reconnect via Slack RTM (v1) API"
+							)
 							connection_attempt += 1
 					except Exception as e:
 						self._logger.error(
-							"Slack RTM API connection error (Exception): " + str(e)
+							"Slack RTM (v1) API connection error (Exception): " + str(e)
 						)
 						connection_attempt += 1
 
 				try:
 					if next_ping > 0 and time.time() >= next_ping:
-						ping_rsp = sc.server.ping()
+						ping_rsp = slack_rtm_v1.server.ping()
 						next_ping = time.time() + ping_interval
 
-					read_msgs = sc.rtm_read()
+					read_msgs = slack_rtm_v1.rtm_read()
 					if read_msgs:
 						for msg in read_msgs:
 							try:
-								self.process_rtm_message(slackAPIToken, msg)
+								self._logger.debug(
+									"Slack RTM (v1) Message: " + str(msg)
+								)
+
+								if (
+										msg.get("type") != "message"
+										or msg.get("text") == None
+								):
+									continue
+
+								if not "ts" in msg or not "user" in msg:
+									continue
+
+								msg_text = msg.get("text", "")
+								if len(msg_text.strip()) == 0:
+									continue
+
+								msg_user = msg.get("user")
+								msg_channel = msg.get("channel")
+								msg_ts = msg.get("ts")
+
+								self._logger.debug(
+									"Received Slack RTM (v1) Message - Text: "
+									+ str(msg_text)
+									+ ", User: "
+									+ str(msg_user)
+									+ ", Channel: "
+									+ str(msg_channel)
+									+ ", TS: "
+									+ str(msg_ts)
+								)
+
+								self.process_rtm_message(
+									slackAPIToken,
+									msg_text,
+									msg_user,
+									msg_channel,
+									msg_ts,
+								)
+
 								##Reset error counter if we've successfully processed a message
 								repeat_error_count = 0
 							except Exception as e:
 								self._logger.error(
-									"Slack RTM message processing error: " + str(e)
+									"Slack RTM (v1) message processing error: "
+									+ str(e),
+									exc_info=e,
 								)
 					else:
 						time.sleep(0.5)
 				except WebSocketConnectionClosedException as ce:
 					self._logger.error(
-						"Slack RTM API read error (WebSocketConnectionClosedException): "
-						+ str(ce.message)
+						"Slack RTM (v1) API read error (WebSocketConnectionClosedException): "
+						+ str(ce),
+						exc_info=ce,
 					)
 					time.sleep(1)
-					sc = None
+					slack_rtm_v1 = None
 				except Exception as e:
 					error_str = str(e)
 
 					self._logger.error(
-						"Slack RTM API read error (Exception): " + error_str
+						"Slack RTM (v1) API read error (Exception): " + error_str
 					)
 
 					##Ovserved errors on windows (WebSocketConnectionClosedException was not thrown)
@@ -1856,31 +2264,29 @@ class OctoslackPlugin(
 					##[Errno 10054] An existing connection was forcibly closed by the remote host
 
 					if (
-						"Max retries exceeded" in error_str
-						or "NewConnectionError" in error_str
-						or "Errno 10054" in error_str
-						or "Errno 11001" in error_str
-						or "forcibly closed" in error_str
+							"Max retries exceeded" in error_str
+							or "NewConnectionError" in error_str
+							or "Errno 10054" in error_str
+							or "Errno 11001" in error_str
+							or "forcibly closed" in error_str
 					):
 						self._logger.error(
-							"Slack RTM API experienced a fatal connection error. Resetting connection."
+							"Slack RTM (v1) API experienced a fatal connection error. Resetting connection."
 						)
-						sc = None
+						slack_rtm_v1 = None
 
 					time.sleep(1)
 					repeat_error_count += 1
 
 					if repeat_error_count >= 100:
 						self._logger.error(
-							"Slack RTM API experienced 100 back to back read errors. Resetting connection."
+							"Slack RTM (v1) API experienced 100 back to back read errors. Resetting connection."
 						)
-						sc = None
+						slack_rtm_v1 = None
 
-			self._logger.debug("Finished Slack RTM read loop")
+			self._logger.debug("Finished Slack RTM (v1) read loop")
 		except Exception as e:
-			self._logger.exception(
-				"Error in Slack RTM read loop, Error: " + str(e.message)
-			)
+			self._logger.exception("Error in Slack RTM read loop, Error: " + str(e))
 
 	def get_rtm_reconnect_delay(self, iteration):
 		max_delay = 1800  ##30 minutes
@@ -1896,57 +2302,514 @@ class OctoslackPlugin(
 				"Slack RTM reconnect delay calculation error (iteration="
 				+ str(iteration)
 				+ "), Error: "
-				+ str(e.message)
+				+ str(e)
 			)
 			return max_delay
 
-	def process_rtm_message(self, slackAPIToken, message):
+	def nonop_add_signal_handler(self, sig, callback, *args):
+		return
+
+	def execute_rtm_loop_v2(self, slackAPIToken):
+		try:
+			self._logger.debug("Starting Slack RTM (v2) wait loop")
+
+			slackAPIConnection = Slacker(slackAPIToken, timeout=SLACKER_TIMEOUT)
+
+			auth_rsp = slackAPIConnection.auth.test()
+			self._logger.debug(
+				"Slack RTM (v2) API Key auth test response: "
+				+ json.dumps(auth_rsp.body)
+			)
+
+			if auth_rsp.successful == None or auth_rsp.successful == False:
+				self._logger.error(
+					"Slack RTM (v2) API Key auth test failed: "
+					+ json.dumps(auth_rsp.body)
+				)
+				self._logger.warn(
+					"Initial Slack RTM (v2) authentication failed but RTM client will still be started should the issue be resolved"
+				)
+			else:
+				self.bot_user_id = auth_rsp.body["user_id"]
+				self._logger.debug("Slack RTM (v2) Bot user id: " + self.bot_user_id)
+
+			loop = asyncio.new_event_loop()
+			self._logger.debug("Slack RTM (v2) event loop: " + str(loop))
+
+			# asyncsio doesn't like running outside the main thread.
+			# it's impossible to start an event loop on the main thread
+			# via a plugin so I needed to patch the obvious bit that fails.
+			# add_signal_handler serves to detect the service is being stopped
+			# and will stop the event loop. This plugin hangles that
+			# logic internally so while not ideal, we can 'disable it'
+			funcType = type(loop.add_signal_handler)
+			loop.add_signal_handler = funcType(self.nonop_add_signal_handler, loop)
+
+			asyncio.set_event_loop(loop)
+
+			self.slack_rtm_v2 = slack.RTMClient(
+				token=slackAPIToken, ping_interval=30, loop=loop
+			)
+			self.slack_rtm_v2.start()
+
+		except Exception as e:
+			self._logger.exception(
+				"Error in Slack RTM (v2) read loop, Error: " + str(e)
+			)
+
+	def process_rtm_v2_message(self, **payload):
+		self._logger.debug("Slack RTM (v2) Message: " + str(payload))
+		if payload == None or "data" not in payload or payload["data"] == None:
+			self._logger.debug("Ignoring Slack RTM (v2) Message")
+			return
+
+		if "client_msg_id" not in payload["data"] or "text" not in payload["data"]:
+			self._logger.debug("Ignoring Slack RTM (v2) Message")
+			return
+
+		slackAPIToken = payload["rtm_client"].token
+
+		data = payload["data"]
+
+		if not "ts" in data or not "user" in data:
+			return
+
+		msg_text = data["text"]
+		if not msg_text or len(msg_text.strip()) == 0:
+			return
+
+		msg_user = data["user"]
+		msg_channel = data["channel"]
+		msg_ts = data["ts"]
+
+		self._logger.debug(
+			"Received Slack RTM (v2) Message - Text: "
+			+ msg_text
+			+ ", User: "
+			+ msg_user
+			+ ", Channel: "
+			+ msg_channel
+			+ ", TS: "
+			+ str(msg_ts)
+		)
+
+		self.process_rtm_message(slackAPIToken, msg_text, msg_user, msg_channel, msg_ts)
+
+	bot_channels = None
+	bot_conversations_map = {}
+	last_conversations_ts = {}
+
+	channels_refresh_interval = 10
+
+	def execute_web_api_loop(self, slackAPIToken):
+		try:
+			self._logger.debug("Starting Slack Web API loop")
+
+			slackAPIConnection = Slacker(slackAPIToken, timeout=SLACKER_TIMEOUT)
+
+			auth_rsp = slackAPIConnection.auth.test()
+			self._logger.debug(
+				"Slack Web API auth test response: " + json.dumps(auth_rsp.body)
+			)
+
+			if auth_rsp.successful == None or auth_rsp.successful == False:
+				self._logger.error(
+					"Slack Web API auth test failed: " + json.dumps(auth_rsp.body)
+				)
+				self._logger.warn(
+					"Initial Slack Web API authentication failed. Exiting channel history loop. Save a new key to reattempt the connection."
+				)
+			else:
+				self.bot_user_id = auth_rsp.body["user_id"]
+				self._logger.debug("Slack Web API Bot user id: " + self.bot_user_id)
+
+			self._logger.debug("Starting Slack Web API event loop")
+
+			next_bot_channels_refresh = time.time()
+			self.web_api_running = True
+			while self.web_api_keep_running:
+				if time.time() >= next_bot_channels_refresh:
+					self.refresh_bot_conversations(slackAPIToken)
+					next_bot_channels_refresh = (
+							time.time() + self.channels_refresh_interval
+					)
+
+				if self.bot_channels == None or len(self.bot_channels) == 0:
+					time.sleep(self.channels_refresh_interval)
+					continue
+
+				for channel in self.bot_channels:
+					self.retrieve_channel_history(slackAPIToken, channel)
+
+					delay = self.get_messages_query_delay()
+					# self._logger.debug(
+					#    "Slack Web API sleeping for " + str(delay) + "secs"
+					# )
+					time.sleep(delay)
+
+			self._logger.debug("Slack Web API event loop ended")
+		except Exception as e:
+			self._logger.exception(
+				"Error in Slack Web API event loop, Error: " + str(e)
+			)
+		self.web_api_running = False
+
+	def get_messages_query_delay(self):
+		minimum = 1.2
+
+		try:
+			delay = float(
+				self._settings.get(["slack_apitoken_config"], merged=True).get(
+					"messages_query_delay"
+				)
+			)
+			if delay >= minimum:
+				return delay
+		except:
+			pass
+
+		return minimum
+
+	def retrieve_channel_history(self, slackAPIToken, channel):
+		conversation_id = None
+		try:
+			# self._logger.debug("Slack Web API  - Starting listen run - " + channel)
+			if not channel in self.bot_conversations_map:
+				return
+
+			conversation_id = self.bot_conversations_map[channel]
+
+			slack = Slacker(slackAPIToken)
+
+			last_ts = None
+			has_more = True
+			next_cursor = None
+
+			##TOD also add a max duration
+			while has_more:
+				if conversation_id in self.last_conversations_ts:
+					if next_cursor == None:
+						last_ts = self.last_conversations_ts[conversation_id]
+					limit = 100
+				else:
+					last_ts = None
+					limit = 1
+
+				if next_cursor == None:
+					# self._logger.debug(
+					#    "Slack Web API - Channel history call - ConversationID: "
+					#    + conversation_id
+					#    + ", Oldest:"
+					#    + str(last_ts)
+					#    + ", Limit: "
+					#    + str(limit)
+					# )
+					##Python3 only
+					# history_rsp = slack.conversations.history(
+					#    conversation_id, oldest=last_ts, limit=limit
+					# )
+					##Needed for Python2 support
+					history_rsp = slack.users.get(
+						"conversations.history",
+						params={
+							"channel": conversation_id,
+							"oldest": last_ts,
+							"limit": limit,
+						},
+					)
+				else:
+					# self._logger.debug(
+					#    "Slack Web API - Channel history call - ConversationID: "
+					#    + conversation_id
+					#    + ", Oldest:"
+					#    + str(last_ts)
+					#    + ", Next cursor: "
+					#    + next_cursor
+					#    + ", Limit: "
+					#    + str(limit)
+					# )
+					##Python3 only
+					# history_rsp = slack.conversations.history(
+					#    conversation_id, oldest=last_ts, cursor=next_cursor, limit=limit
+					# )
+					##Needed for Python2 support
+					history_rsp = slack.users.get(
+						"conversations.history",
+						params={
+							"channel": conversation_id,
+							"cursor": next_cursor,
+							"oldest": last_ts,
+							"limit": limit,
+						},
+					)
+				has_more = False
+				next_cursor = None
+
+				if not history_rsp.successful:
+					if conversation_id in self.last_conversations_ts:
+						self._logger.debug(
+							"Slack Web API - Removing cached conversation ID TS for "
+							+ conversation_id
+							+ ". Encountered error or bot removed from channel"
+						)
+						del self.last_conversations_ts[conversation_id]
+				else:
+					messages = history_rsp.body["messages"]
+					msg_count = len(messages)
+					if msg_count < 0:
+						return
+
+					if not limit == 1:
+						has_more = history_rsp.body["has_more"]
+						if "response_metadata" in history_rsp.body:
+							response_metadata = history_rsp.body["response_metadata"]
+							if "next_cursor" in response_metadata:
+								next_cursor = response_metadata["next_cursor"].strip()
+								if len(next_cursor) == 0:
+									next_cursor = None
+
+					i = msg_count - 1
+					while i >= 0:
+						message = messages[i]
+						i -= 1
+
+						try:
+							if not "ts" in message or not "user" in message:
+								continue
+
+							msg_user = message["user"]
+							msg_ts = message["ts"]
+							self.last_conversations_ts[conversation_id] = msg_ts
+
+							if not "type" in message:
+								continue
+
+							msg_type = message["type"]
+							if not msg_type == "message":
+								continue
+
+							msg_text = message["text"]
+
+							if limit == 1:
+								# Only need the latest ts
+								continue
+
+							if len(msg_text.strip()) == 0:
+								continue
+
+							self._logger.debug(
+								"Received Slack Web API Message - Text: "
+								+ msg_text
+								+ ", User: "
+								+ msg_user
+								+ ", Channel: "
+								+ channel
+								+ ", ConversationID: "
+								+ conversation_id
+								+ ", TS: "
+								+ str(msg_ts)
+							)
+							self.process_rtm_message(
+								slackAPIToken,
+								msg_text,
+								msg_user,
+								conversation_id,
+								msg_ts,
+							)
+						except Exception as e:
+							self._logger.exception(
+								"Slack Web API - Error processing message: " + str(e)
+							)
+		except Exception as e:
+			error_msg = str(e)
+			if (
+					"scope" in error_msg or "channel_not_found" in error_msg
+			) and conversation_id in self.last_conversations_ts:
+				self._logger.exception(
+					"Slack Web API - Removing cached conversation ID TS for "
+					+ conversation_id
+					+ ". Encountered error or bot removed from channel"
+				)
+				del self.last_conversations_ts[conversation_id]
+
+			error_msg_lower = error_msg.lower()
+			##Ignore blips that we'll recover from on the next iteration
+			if (
+					"connection aborted" in error_msg_lower
+					or "error(107," in error_msg_lower
+					or "badstatusline" in error_msg_lower
+			):
+				self._logger.debug(
+					"Slack Web API - Error (that we'll ignore) querying channel history: "
+					+ error_msg
+				)
+			else:
+				self._logger.exception(
+					"Slack Web API - Error querying channel history: " + error_msg
+				)
+
+			if "missing_scope" in error_msg:
+				self._logger.warn(
+					"Sleeping for 30 seconds due to missing scope. Please see the Octoslack settings dialog for the list of required scopes"
+				)
+				time.sleep(30)
+
+	def refresh_bot_conversations(self, slackAPIToken):
+		try:
+			# self._logger.debug("Slack Web API - Updating bot conversations list...")
+
+			slack = Slacker(slackAPIToken)
+
+			rsp = slack.users.get(
+				"users.conversations",
+				params={
+					"exclude_archived": True,
+					"types": "public_channel, private_channel",
+				},
+			)
+
+			if not rsp.successful:
+				self._logger.error(
+					"Slack Web API - Failed to retrieve bot's channel list"
+				)
+				return
+
+			new_map = {}
+			new_channels = []
+			new_last_conversations_ts = {}
+
+			for channel in rsp.body["channels"]:
+				is_channel = "is_channel" in channel and channel["is_channel"]
+				is_group = (
+						"is_group" in channel and channel["is_group"]
+				)  # private channel
+
+				if (
+						(not is_channel and not is_group)
+						or "name" not in channel
+						or "id" not in channel
+				):
+					continue
+
+				channel_name = channel["name"]
+				channel_id = channel["id"]
+
+				# self._logger.debug(
+				#    "Slack Web API - Channel name: "
+				#    + str(channel_name)
+				#    + ", Channel ID: "
+				#    + channel_id
+				# )
+
+				new_map[channel_name] = channel_id
+				new_channels.append(channel_name)
+
+				if channel_id in self.last_conversations_ts:
+					new_last_conversations_ts[channel_id] = self.last_conversations_ts[
+						channel_id
+					]
+
+			# self._logger.debug("Slack Web API - Bot conversations: " + str(new_map))
+
+			self.bot_conversations_map = new_map
+			self.bot_channels = new_channels
+			self.last_conversations_ts = new_last_conversations_ts
+		except Exception as e:
+			error_msg = str(e)
+			error_msg_lower = error_msg.lower()
+			##Ignore blips that we'll recover from on the next iteration
+			if (
+					"connection aborted" in error_msg_lower
+					or "error(107," in error_msg_lower
+					or "badstatusline" in error_msg_lower
+			):
+				self._logger.debug(
+					"Error (that we'll ignore) refreshing bot conversations list: "
+					+ error_msg
+				)
+			else:
+				self._logger.exception(
+					"Error refreshing bot conversations list: " + error_msg
+				)
+
+			if "missing_scope" in error_msg:
+				self._logger.warn(
+					"Sleeping for 30 seconds due to missing scope. Please see the Octoslack settings dialog for the list of required scopes"
+				)
+				time.sleep(30)
+
+	slack_cmd_stop_user = None
+	slack_cmd_pause_user = None
+	slack_cmd_resume_user = None
+
+	def process_rtm_message(
+			self, slackAPIToken, msg_text, msg_user, msg_channel, msg_ts
+	):
+		self._logger.debug(
+			"Processing Slack Message - Text: "
+			+ str(msg_text)
+			+ ", User: "
+			+ str(msg_user)
+			+ ", Channel: "
+			+ str(msg_channel)
+			+ ", TS: "
+			+ str(msg_ts)
+		)
+
+		##TODO ignore if the msg source is this bot
+
 		if not self._settings.get(["slack_apitoken_config"], merged=True).get(
-			"enable_commands"
+				"enable_commands"
 		):
 			return
 
 		alternate_bot_name = self._settings.get(
 			["slack_apitoken_config"], merged=True
-		).get("alternate_bot_name")
+		).get("alternate_bot_username")
+
 		alternate_bot_id = None
 		if not alternate_bot_name == None and len(alternate_bot_name.strip()) > 0:
 			alternate_bot_id = "@" + alternate_bot_name.strip()
 
-		if (self.bot_user_id == None and alternate_bot_id == None) or message == None:
-			return
-
-		if message.get("type") != "message" or message.get("text") == None:
+		if (
+				(self.bot_user_id == None and alternate_bot_id == None)
+				or msg_text == None
+				or len(msg_text.strip()) == 0
+		):
 			return
 
 		bot_id = "<@" + self.bot_user_id + ">"
 
-		message_text = message.get("text", "")
-
 		matched_id = None
 
-		if bot_id in message_text:
+		self._logger.debug(
+			"Slack message - Matching bot_id: "
+			+ str(bot_id)
+			+ " and alternate_bot_id: "
+			+ str(alternate_bot_id)
+			+ " against msg: "
+			+ str(msg_text)
+		)
+
+		if bot_id and bot_id in msg_text:
 			matched_id = bot_id
-		elif alternate_bot_id in message_text:
+		elif alternate_bot_id and alternate_bot_id in msg_text:
 			matched_id = alternate_bot_id
 		else:
 			return
 
-		self._logger.debug("Slack RTM Read: " + json.dumps(message))
-
-		source_userid = message.get("user")
-		source_username = self.get_slack_username(slackAPIToken, source_userid)
+		source_username = self.get_slack_username(slackAPIToken, msg_user)
 		self._logger.debug(
-			"Slack RTM message source UserID: "
-			+ str(source_userid)
+			"Slack message source UserID: "
+			+ str(msg_user)
 			+ ", Username: "
 			+ str(source_username)
 		)
 
-		channel = message["channel"]
-		timestamp = message["ts"]
+		if source_username == None:
+			return
 
-		command = message["text"].split(matched_id)[1].strip().lower()
+		command = msg_text.split(matched_id)[1].strip().lower()
 
 		reaction = ""
 
@@ -1976,14 +2839,14 @@ class OctoslackPlugin(
 		if not processing_reaction == None:
 			processing_reaction = processing_reaction.strip()
 			if processing_reaction.startswith(":") and processing_reaction.endswith(
-				":"
+					":"
 			):
 				processing_reaction = processing_reaction[1:-1].strip()
 
 		if not unauthorized_reaction == None:
 			unauthorized_reaction = unauthorized_reaction.strip()
 			if unauthorized_reaction.startswith(":") and unauthorized_reaction.endswith(
-				":"
+					":"
 			):
 				unauthorized_reaction = unauthorized_reaction[1:-1].strip()
 
@@ -2011,7 +2874,7 @@ class OctoslackPlugin(
 
 		if command == "help" and enabled_commands["help"]["enabled"]:
 			self._logger.info(
-				"Slack RTM - help command - user: "
+				"Slack - help command - user: "
 				+ source_username
 				+ ", authorized: "
 				+ str(authorized)
@@ -2019,11 +2882,11 @@ class OctoslackPlugin(
 			if not authorized:
 				reaction = unauthorized_reaction
 			else:
-				self.handle_event("Help", channel, {}, True, False, None)
+				self.handle_event("Help", msg_channel, {}, True, False, None)
 				reaction = positive_reaction
 		elif command == "stop" and enabled_commands["stop"]["enabled"]:
 			self._logger.info(
-				"Slack RTM - stop command - user: "
+				"Slack - stop command - user: "
 				+ source_username
 				+ ", authorized: "
 				+ str(authorized)
@@ -2034,8 +2897,10 @@ class OctoslackPlugin(
 				##Send processing reaction
 				sent_processing_reaction = True
 				self.add_message_reaction(
-					slackAPIToken, channel, timestamp, processing_reaction, False
+					slackAPIToken, msg_channel, msg_ts, processing_reaction, False
 				)
+
+				self.slack_cmd_stop_user = source_username
 
 				self._printer.cancel_print()
 				reaction = positive_reaction
@@ -2043,7 +2908,7 @@ class OctoslackPlugin(
 				reaction = negative_reaction
 		elif command == "pause" and enabled_commands["pause"]["enabled"]:
 			self._logger.info(
-				"Slack RTM - pause command - user: "
+				"Slack - pause command - user: "
 				+ source_username
 				+ ", authorized: "
 				+ str(authorized)
@@ -2055,15 +2920,18 @@ class OctoslackPlugin(
 				sent_processing_reaction = True
 
 				self.add_message_reaction(
-					slackAPIToken, channel, timestamp, processing_reaction, False
+					slackAPIToken, msg_channel, msg_ts, processing_reaction, False
 				)
+
+				self.slack_cmd_pause_user = source_username
+
 				self._printer.toggle_pause_print()
 				reaction = positive_reaction
 			else:
 				reaction = negative_reaction
 		elif command == "resume" and enabled_commands["resume"]["enabled"]:
 			self._logger.info(
-				"Slack RTM - resume command - user: "
+				"Slack - resume command - user: "
 				+ source_username
 				+ ", authorized: "
 				+ str(authorized)
@@ -2074,8 +2942,10 @@ class OctoslackPlugin(
 				##Send processing reaction
 				sent_processing_reaction = True
 				self.add_message_reaction(
-					slackAPIToken, channel, timestamp, processing_reaction, False
+					slackAPIToken, msg_channel, msg_ts, processing_reaction, False
 				)
+
+				self.slack_cmd_resume_user = source_username
 
 				self._printer.toggle_pause_print()
 				reaction = positive_reaction
@@ -2084,7 +2954,7 @@ class OctoslackPlugin(
 		elif command == "status" and enabled_commands["status"]["enabled"]:
 			##Send processing reaction
 			self._logger.info(
-				"Slack RTM - status command - user: "
+				"Slack - status command - user: "
 				+ source_username
 				+ ", authorized: "
 				+ str(authorized)
@@ -2095,24 +2965,24 @@ class OctoslackPlugin(
 				sent_processing_reaction = True
 
 				self.add_message_reaction(
-					slackAPIToken, channel, timestamp, processing_reaction, False
+					slackAPIToken, msg_channel, msg_ts, processing_reaction, False
 				)
-				self.handle_event("Progress", channel, {}, True, False, None)
+				self.handle_event("Progress", msg_channel, {}, True, False, None)
 				reaction = positive_reaction
 
 		else:
 			reaction = negative_reaction
 
-		self.add_message_reaction(slackAPIToken, channel, timestamp, reaction, False)
+		self.add_message_reaction(slackAPIToken, msg_channel, msg_ts, reaction, False)
 
 		##Remove the processing reaction if it was previously added
 		if sent_processing_reaction:
 			self.add_message_reaction(
-				slackAPIToken, channel, timestamp, processing_reaction, True
+				slackAPIToken, msg_channel, msg_ts, processing_reaction, True
 			)
 
 	def is_rtm_command_authorized_user(
-		self, authorized_users, username, enabled_commands, command
+			self, authorized_users, username, enabled_commands, command
 	):
 		if authorized_users == None or len(authorized_users) == 0:
 			return True
@@ -2144,7 +3014,7 @@ class OctoslackPlugin(
 			slackAPIConnection = Slacker(slackAPIToken, timeout=SLACKER_TIMEOUT)
 
 			self._logger.debug(
-				"Retrieving username for Slack RTM message - User ID: " + userid
+				"Retrieving username for Slack message - User ID: " + userid
 			)
 
 			user_info_rsp = slackAPIConnection.users.info(userid)
@@ -2159,10 +3029,10 @@ class OctoslackPlugin(
 			return user_info_rsp.body["user"]["name"]
 		except Exception as e:
 			self._logger.exception(
-				"Error retrieving username for Slack RTM message - User ID: "
+				"Error retrieving username for Slack message - User ID: "
 				+ userid
 				+ ", Error: "
-				+ str(e.message)
+				+ str(e)
 			)
 
 	def add_message_reaction(self, slackAPIToken, channel, timestamp, reaction, remove):
@@ -2178,7 +3048,7 @@ class OctoslackPlugin(
 			slackAPIConnection = Slacker(slackAPIToken, timeout=SLACKER_TIMEOUT)
 
 			self._logger.debug(
-				"Sending Slack RTM reaction - Channel: "
+				"Sending Slack reaction - Channel: "
 				+ channel
 				+ ", Timestamp: "
 				+ timestamp
@@ -2199,7 +3069,7 @@ class OctoslackPlugin(
 
 			if reaction_rsp.successful == None or reaction_rsp.successful == False:
 				self._logger.debug(
-					"Slack RTM send reaction failed - Channel: "
+					"Slack send reaction failed - Channel: "
 					+ channel
 					+ ", Timestamp: "
 					+ timestamp
@@ -2211,7 +3081,7 @@ class OctoslackPlugin(
 				)
 			else:
 				self._logger.debug(
-					"Successfully sent Slack RTM reaction - Channel: "
+					"Successfully sent Slack reaction - Channel: "
 					+ channel
 					+ ", Timestamp: "
 					+ timestamp
@@ -2222,7 +3092,7 @@ class OctoslackPlugin(
 				)
 		except Exception as e:
 			self._logger.exception(
-				"Error sending Slack RTM reaction - Channel: "
+				"Error sending Slack reaction - Channel: "
 				+ channel
 				+ ", Timestamp: "
 				+ timestamp
@@ -2231,8 +3101,60 @@ class OctoslackPlugin(
 				+ ", Remove: "
 				+ str(remove)
 				+ ", Error: "
-				+ str(e.message)
+				+ str(e)
 			)
+
+	def delete_file(self, filename):
+		max_attempts = 3
+
+		if filename == None or len(filename.strip()) == 0:
+			return
+
+		for attempt_no in range(1, max_attempts + 1):
+			try:
+				delay = (attempt_no - 1) * 0.5
+				if delay > 0:
+					self._logger.debug(
+						"Sleeping "
+						+ str(delay)
+						+ "ms before next deletion attempt of local file (attempt #"
+						+ str(attempt_no)
+						+ "): "
+						+ filename
+					)
+					time.sleep(delay)
+
+				self._logger.debug(
+					"Deleting local file (attempt #"
+					+ str(attempt_no)
+					+ "): "
+					+ filename
+				)
+				os.remove(filename)
+
+				if not os.path.exists(filename):
+					self._logger.debug(
+						"Deletion of local file confirmed (attempt #"
+						+ str(attempt_no)
+						+ "): "
+						+ filename
+					)
+					return
+			except Exception as e:
+				self._logger.error(
+					"Error attempting deletion of local file (attempt #"
+					+ str(attempt_no)
+					+ "): "
+					+ filename,
+					e,
+				)
+
+		self._logger.debug(
+			"Deletion of local file failed after "
+			+ str(max_attempts)
+			+ " attempts: "
+			+ filename
+		)
 
 	def connection_method(self):
 		return self._settings.get(["connection_method"], merged=True)
@@ -2253,12 +3175,16 @@ class OctoslackPlugin(
 			return "*", "*", " ", "\n"
 		elif connection_method == "MATRIX":
 			return "<b>", "</b>", " ", "<br/>\n"
+		elif connection_method == "DISCORD":
+			return "**", "**", " ", "\n"
+		elif connection_method == "TEAMS":
+			return "**", "**", " ", "\n\n"
 
 		return "", "", ": ", "\n"
 
 	def format_eta(self, seconds):
 		"""For a given seconds to complete, returns an ETA string for humans.
-		"""
+        """
 		if seconds is None or seconds == "N/A":
 			return "N/A"
 
@@ -2367,7 +3293,7 @@ class OctoslackPlugin(
 
 				##Only display seconds if nothing else has been displayed or if there is less than 10 minutes left
 		if len(time_str) == 0 or (
-			total_days == 0 and total_hours == 0 and total_minutes < 10
+				total_days == 0 and total_hours == 0 and total_minutes < 10
 		):
 			if len(time_str) > 0:
 				time_str += " "
@@ -2380,7 +3306,7 @@ class OctoslackPlugin(
 		return time_str
 
 	_bot_progress_last_req = None
-	_bot_progress_last_snapshot_queue = Queue.Queue()
+	_bot_progress_last_snapshot_queue = six.moves.queue.Queue()
 	_slack_next_progress_snapshot_time = 0
 
 	def execute_command(self, event, command, capture_output, command_rsp):
@@ -2421,40 +3347,38 @@ class OctoslackPlugin(
 				+ str(command_output)
 			)
 		except Exception as e:
-			error_msg = e.message
-
-			if type(e) == ValueError:
-				self._logger.error(
-					"Failed to execute command for event: " + event + " - " + e.message
-				)
+			if hasattr(e, "message"):
+				error_msg = e.message
 			else:
-				self._logger.exception(
-					"Failed to execute command for event: " + event + " - " + str(e)
-				)
+				error_msg = str(e)
+
+			self._logger.error(
+				"Failed to execute command for event: " + event + " - " + error_msg
+			)
 
 		command_rsp.put(return_code)
 		command_rsp.put(command_output)
 		command_rsp.put(error_msg)
 
 	def send_slack_message(
-		self,
-		event,
-		event_settings,
-		event_payload,
-		channel_override,
-		fallback,
-		pretext,
-		title,
-		text,
-		color,
-		fields,
-		footer,
-		includeSnapshot,
-		print_pct_complete,
-		command_thread,
-		command_thread_rsp,
-		capture_command_returncode,
-		capture_command_output,
+			self,
+			event,
+			event_settings,
+			event_payload,
+			channel_override,
+			fallback,
+			pretext,
+			title,
+			text,
+			color,
+			fields,
+			footer,
+			includeSnapshot,
+			print_pct_complete,
+			command_thread,
+			command_thread_rsp,
+			capture_command_returncode,
+			capture_command_output,
 	):
 		try:
 			slackAPIToken = None
@@ -2464,7 +3388,7 @@ class OctoslackPlugin(
 			rocketChatServerURL = None
 			rocketChatUsername = None
 			rocketChatPassword = None
-			marixServerURL = None
+			matrixServerURL = None
 			matrixAccessToken = None
 			matrixUserID = None
 
@@ -2475,13 +3399,13 @@ class OctoslackPlugin(
 			connection_method = self.connection_method()
 			progress_update_method = (
 				self._settings.get(["supported_events"], merged=True)
-				.get("Progress")
-				.get("UpdateMethod")
+					.get("Progress")
+					.get("UpdateMethod")
 			)
 			slack_progress_snapshot_min_interval = 60 * int(
 				self._settings.get(["supported_events"], merged=True)
-				.get("Progress")
-				.get("SlackMinSnapshotUpdateInterval")
+					.get("Progress")
+					.get("SlackMinSnapshotUpdateInterval")
 			)
 			self._logger.debug("Octoslack connection method: " + connection_method)
 
@@ -2547,12 +3471,12 @@ class OctoslackPlugin(
 					rocketChatPassword = rocketChatPassword.strip()
 
 				if (
-					rocketChatServerURL == None
-					or len(rocketChatServerURL) == 0
-					or rocketChatUsername == None
-					or len(rocketChatUsername) == 0
-					or rocketChatPassword == None
-					or len(rocketChatPassword) == 0
+						rocketChatServerURL == None
+						or len(rocketChatServerURL) == 0
+						or rocketChatUsername == None
+						or len(rocketChatUsername) == 0
+						or rocketChatPassword == None
+						or len(rocketChatPassword) == 0
 				):
 					self._logger.error(
 						"Rocket.Chat connection not available, skipping message send"
@@ -2577,12 +3501,12 @@ class OctoslackPlugin(
 					matrixUserID = matrixUserID.strip()
 
 				if (
-					matrixServerURL == None
-					or len(matrixServerURL) == 0
-					or matrixAccessToken == None
-					or len(matrixAccessToken) == 0
-					or matrixUserID == None
-					or len(matrixUserID) == 0
+						matrixServerURL == None
+						or len(matrixServerURL) == 0
+						or matrixAccessToken == None
+						or len(matrixAccessToken) == 0
+						or matrixUserID == None
+						or len(matrixUserID) == 0
 				):
 					self._logger.error(
 						"Matrix connection not available, skipping message send"
@@ -2612,21 +3536,21 @@ class OctoslackPlugin(
 							now = time.time()
 
 							if event == "Progress" and (
-								self._slack_next_progress_snapshot_time > 0
-								and now < self._slack_next_progress_snapshot_time
+									self._slack_next_progress_snapshot_time > 0
+									and now < self._slack_next_progress_snapshot_time
 							):
 								snapshot_msg = None
 							else:
 								if event == "Progress":
 									self._slack_next_progress_snapshot_time = (
-										now + slack_progress_snapshot_min_interval
+											now + slack_progress_snapshot_min_interval
 									)
 
 								desc = event + " snapshot"
 								if (
-									event == "Progress"
-									and print_pct_complete
-									and print_pct_complete != "N/A"
+										event == "Progress"
+										and print_pct_complete
+										and print_pct_complete != "N/A"
 								):
 									desc = desc + " taken @ " + print_pct_complete
 
@@ -2651,21 +3575,23 @@ class OctoslackPlugin(
 
 						##No need to append the URL to the body text as Slack will expose the URL itself
 						if (
-							connection_method == "APITOKEN"
-							or (
+								connection_method == "APITOKEN"
+								or (
 								connection_method == "WEBHOOK"
 								and not self.mattermost_mode()
-							)
-							or connection_method == "PUSHBULLET"
-							or connection_method == "PUSHOVER"
-							or (
+						)
+								or connection_method == "PUSHBULLET"
+								or connection_method == "PUSHOVER"
+								or (
 								connection_method == "ROCKETCHAT"
 								and snapshot_upload_method == "ROCKETCHAT"
-							)
-							or (
+						)
+								or (
 								connection_method == "MATRIX"
 								and snapshot_upload_method == "MATRIX"
-							)
+						)
+								or connection_method == "DISCORD"
+								or connection_method == "TEAMS"
 						):
 							snapshot_url_to_append = None
 
@@ -2681,18 +3607,18 @@ class OctoslackPlugin(
 				else:
 					for error_msg in snapshot_error_msgs:
 						if (
-							connection_method == "WEBHOOK"
-							or connection_method == "APITOKEN"
+								connection_method == "WEBHOOK"
+								or connection_method == "APITOKEN"
 						):
 							text += "\n *-* "
 						elif connection_method == "PUSHOVER":
 							text += (
-								newline
-								+ " "
-								+ bold_text_start
-								+ " - "
-								+ bold_text_end
-								+ " "
+									newline
+									+ " "
+									+ bold_text_start
+									+ " - "
+									+ bold_text_end
+									+ " "
 							)
 						else:
 							text += newline + " - "
@@ -2700,7 +3626,7 @@ class OctoslackPlugin(
 						text += error_msg
 
 			if (
-				capture_command_returncode or capture_command_output
+					capture_command_returncode or capture_command_output
 			) and command_thread:
 				try:
 					cmd_return_code = None
@@ -2711,9 +3637,9 @@ class OctoslackPlugin(
 
 					if command_thread.isAlive():
 						cmd_error_msg = (
-							"Command did not return within "
-							+ str(COMMAND_EXECUTION_WAIT)
-							+ " seconds"
+								"Command did not return within "
+								+ str(COMMAND_EXECUTION_WAIT)
+								+ " seconds"
 						)
 					else:
 						cmd_return_code = command_thread_rsp.get()
@@ -2727,11 +3653,11 @@ class OctoslackPlugin(
 							text += newline
 
 						text += (
-							bold_text_start
-							+ "Command return code"
-							+ bold_text_end
-							+ name_val_sep
-							+ str(cmd_return_code)
+								bold_text_start
+								+ "Command return code"
+								+ bold_text_end
+								+ name_val_sep
+								+ str(cmd_return_code)
 						)
 
 					if capture_command_output and cmd_output:
@@ -2741,11 +3667,11 @@ class OctoslackPlugin(
 							text += newline
 
 						text += (
-							bold_text_start
-							+ "Command output"
-							+ bold_text_end
-							+ name_val_sep
-							+ str(cmd_output)
+								bold_text_start
+								+ "Command output"
+								+ bold_text_end
+								+ name_val_sep
+								+ str(cmd_output)
 						)
 
 					if cmd_error_msg and len(cmd_error_msg.strip()) > 0:
@@ -2755,11 +3681,11 @@ class OctoslackPlugin(
 							text += newline
 
 						text += (
-							bold_text_start
-							+ "Command execution error"
-							+ bold_text_end
-							+ name_val_sep
-							+ str(cmd_error_msg.strip())
+								bold_text_start
+								+ "Command execution error"
+								+ bold_text_end
+								+ name_val_sep
+								+ str(cmd_error_msg.strip())
 						)
 				except Exception as e:
 					self._logger.exception(
@@ -2773,18 +3699,18 @@ class OctoslackPlugin(
 						text += newline
 
 					text += (
-						bold_text_start
-						+ "Command execution error"
-						+ bold_text_end
-						+ name_val_sep
-						+ str(e.message)
+							bold_text_start
+							+ "Command execution error"
+							+ bold_text_end
+							+ name_val_sep
+							+ str(e.message)
 					)
 
 			if (
-				connection_method == "WEBHOOK"
-				and self.mattermost_mode()
-				and not footer == None
-				and len(footer) > 0
+					connection_method == "WEBHOOK"
+					and self.mattermost_mode()
+					and not footer == None
+					and len(footer) > 0
 			):
 				if text == None:
 					text = ""
@@ -2839,6 +3765,14 @@ class OctoslackPlugin(
 					channels = self._settings.get(["matrix_config"], merged=True).get(
 						"channel"
 					)
+				elif connection_method == "DISCORD":
+					channels = self._settings.get(["discord_config"], merged=True).get(
+						"webhook_urls"
+					)
+				elif connection_method == "TEAMS":
+					channels = self._settings.get(["teams_config"], merged=True).get(
+						"webhook_urls"
+					)
 
 			if not channels:
 				channels = ""
@@ -2846,8 +3780,8 @@ class OctoslackPlugin(
 			if event == "MovieDone":
 				upload_timelapse = (
 					self._settings.get(["supported_events"], merged=True)
-					.get("MovieDone")
-					.get("UploadMovie")
+						.get("MovieDone")
+						.get("UploadMovie")
 				)
 
 				if upload_timelapse == True:
@@ -2856,8 +3790,8 @@ class OctoslackPlugin(
 					)
 					upload_timelapse_link = (
 						self._settings.get(["supported_events"], merged=True)
-						.get("MovieDone")
-						.get("UploadMovieLink")
+							.get("MovieDone")
+							.get("UploadMovieLink")
 					)
 
 					if timelapse_url and upload_timelapse_link:
@@ -2866,12 +3800,12 @@ class OctoslackPlugin(
 						elif len(text) > 0:
 							text += newline
 						text += (
-							bold_text_start
-							+ "Timelapse"
-							+ bold_text_end
-							+ name_val_sep
-							+ timelapse_url
+								bold_text_start + "Timelapse" + bold_text_end + name_val_sep
 						)
+						if connection_method == "TEAMS":
+							text += "[" + timelapse_url + "](" + timelapse_url + ")"
+						else:
+							text += timelapse_url
 
 					if timelapse_errors:
 						if text == None:
@@ -2885,18 +3819,18 @@ class OctoslackPlugin(
 						else:
 							for timelapse_error in timelapse_errors:
 								if (
-									connection_method == "WEBHOOK"
-									or connection_method == "APITOKEN"
+										connection_method == "WEBHOOK"
+										or connection_method == "APITOKEN"
 								):
 									text += "\n *-* "
 								elif connection_method == "PUSHOVER":
 									text += (
-										newline
-										+ " "
-										+ bold_text_start
-										+ " - "
-										+ bold_text_end
-										+ " "
+											newline
+											+ " "
+											+ bold_text_start
+											+ " - "
+											+ bold_text_end
+											+ " "
 									)
 								else:
 									text += newline + " - "
@@ -2912,24 +3846,53 @@ class OctoslackPlugin(
 				"postMessage - Channels: " + channels + ", JSON: " + attachments_json
 			)
 
-			slack_identity_config = self._settings.get(["slack_identity"], merged=True)
-			slack_as_user = slack_identity_config["existing_user"]
-			slack_icon_url = ""
-			slack_icon_emoji = ""
-			slack_username = ""
+			slack_as_user = True
+			slack_icon_url = None
+			slack_icon_emoji = None
+			slack_username = None
 
-			if not slack_as_user:
-				if "icon_url" in slack_identity_config:
-					slack_icon_url = slack_identity_config["icon_url"]
-				if not self.mattermost_mode() and "icon_emoji" in slack_identity_config:
-					slack_icon_emoji = slack_identity_config["icon_emoji"]
-				if "username" in slack_identity_config:
-					slack_username = slack_identity_config["username"]
+			if self._settings.get(["slack_apitoken_config"], merged=True).get(
+					"classic_bot"
+			):
+				slack_identity_config = self._settings.get(
+					["slack_identity"], merged=True
+				)
+				slack_as_user = slack_identity_config["existing_user"]
+
+				if not slack_as_user:
+					if (
+							"icon_url" in slack_identity_config
+							and len(slack_identity_config["icon_url"].strip()) > 0
+					):
+						slack_icon_url = slack_identity_config["icon_url"].strip()
+					if (
+							not self.mattermost_mode()
+							and "icon_emoji" in slack_identity_config
+							and len(slack_identity_config["icon_emoji"].strip()) > 0
+					):
+						slack_icon_emoji = slack_identity_config["icon_emoji"].strip()
+					if (
+							"username" in slack_identity_config
+							and slack_identity_config["username"]
+							and len(slack_identity_config["username"].strip()) > 0
+					):
+						slack_username = slack_identity_config["username"].strip()
 
 			allow_empty_channel = connection_method == "WEBHOOK"
 
 			if len(channels) == 0:
 				self._logger.debug("No channels configured")
+
+			self._logger.debug(
+				"postMessage - username="
+				+ str(slack_username)
+				+ ", as_user="
+				+ str(slack_as_user)
+				+ ", icon_url="
+				+ str(slack_icon_url)
+				+ ", icon_emoji="
+				+ str(slack_icon_emoji)
+			)
 
 			for channel in channels.split(","):
 				channel = channel.strip()
@@ -2945,11 +3908,12 @@ class OctoslackPlugin(
 							slackAPIToken, timeout=SLACKER_TIMEOUT
 						)
 
-						##Applies to both standard Progress events as well as '@bot status' Slack RTM commands
+						##Applies to both standard Progress events as well as '@bot status' Slack commands
 						if event == "Progress":
 							if (
-								self._bot_progress_last_req
-								and progress_update_method == "INPLACE"
+									self._bot_progress_last_req
+									and progress_update_method == "INPLACE"
+									and connection_method == "APITOKEN"
 							):
 								apiRsp = slackAPIConnection.chat.update(
 									self._bot_progress_last_req.body["channel"],
@@ -2998,7 +3962,7 @@ class OctoslackPlugin(
 										"Deleting local Slack asset: "
 										+ str(snapshot_msg["local_file"])
 									)
-									os.remove(snapshot_msg["local_file"])
+									self.delete_file(snapshot_msg["local_file"])
 								except Exception as e:
 									self._logger.error(
 										"Deletion of local Slack asset failed. Local path: {}, Error: {}".format(
@@ -3009,15 +3973,16 @@ class OctoslackPlugin(
 							if event == "Progress":
 								# bump out the 'next time' again as an upload can take some time
 								_slack_next_progress_snapshot_time = (
-									time.time() + slack_progress_snapshot_min_interval
+										time.time() + slack_progress_snapshot_min_interval
 								)
 								if (
-									progress_update_method == "INPLACE"
-									and self._bot_progress_last_snapshot_queue.qsize()
-									> 0
+										progress_update_method == "INPLACE"
+										and connection_method == "APITOKEN"
+										and self._bot_progress_last_snapshot_queue.qsize()
+										> 0
 								):
 									while (
-										not self._bot_progress_last_snapshot_queue.empty()
+											not self._bot_progress_last_snapshot_queue.empty()
 									):
 										prev_snapshot = (
 											self._bot_progress_last_snapshot_queue.get()
@@ -3051,12 +4016,15 @@ class OctoslackPlugin(
 
 					if not slack_as_user == None:
 						slack_msg["as_user"] = slack_as_user
-					if not slack_icon_url == None and len(slack_icon_url) > 0:
-						slack_msg["icon_url"] = slack_icon_url
-					if not slack_icon_emoji == None and len(slack_icon_emoji) > 0:
-						slack_msg["icon_emoji"] = slack_icon_emoji
-					if not slack_username == None and len(slack_username) > 0:
-						slack_msg["username"] = slack_username
+					if not slack_icon_url == None and len(slack_icon_url.strip()) > 0:
+						slack_msg["icon_url"] = slack_icon_url.strip()
+					if (
+							not slack_icon_emoji == None
+							and len(slack_icon_emoji.strip()) > 0
+					):
+						slack_msg["icon_emoji"] = slack_icon_emoji.strip()
+					if not slack_username == None and len(slack_username.strip()) > 0:
+						slack_msg["username"] = slack_username.strip()
 
 					slack_msg["attachments"] = attachments
 					self._logger.debug(
@@ -3079,7 +4047,7 @@ class OctoslackPlugin(
 							"Slack WebHook message send error: " + str(e)
 						)
 				elif (
-					not pushbulletAccessToken == None and len(pushbulletAccessToken) > 0
+						not pushbulletAccessToken == None and len(pushbulletAccessToken) > 0
 				):
 					self._logger.debug("Send Pushbullet msg start")
 					pb = Pushbullet(pushbulletAccessToken)
@@ -3125,7 +4093,7 @@ class OctoslackPlugin(
 					if hosted_url and len(hosted_url) > 0:
 						##def push_file(self, file_name, file_url, file_type, body=None, title=None, device=None, chat=None, email=None, channel=None):
 
-						pb_filename = hosted_url[hosted_url.rfind("/") + 1 :]
+						pb_filename = hosted_url[hosted_url.rfind("/") + 1:]
 						self._logger.debug(
 							"Pushbullet msg image details: file_name: "
 							+ pb_filename
@@ -3199,7 +4167,7 @@ class OctoslackPlugin(
 							pb_image_local_path = hosted_url
 						else:
 							pb_image_url = hosted_url
-							pb_image_title = hosted_url[hosted_url.rfind("/") + 1 :]
+							pb_image_title = hosted_url[hosted_url.rfind("/") + 1:]
 
 					po_sound = event_settings["PushoverSound"]
 					if po_sound:
@@ -3255,14 +4223,14 @@ class OctoslackPlugin(
 						self._logger.debug(
 							"Deleting local Pushover asset: " + str(pb_image_local_path)
 						)
-						os.remove(pb_image_local_path)
+						self.delete_file(pb_image_local_path)
 				elif (
-					not rocketChatServerURL == None
-					and len(rocketChatServerURL) > 0
-					and not rocketChatUsername == None
-					and len(rocketChatUsername) > 0
-					and not rocketChatPassword == None
-					and len(rocketChatPassword) > 0
+						not rocketChatServerURL == None
+						and len(rocketChatServerURL) > 0
+						and not rocketChatUsername == None
+						and len(rocketChatUsername) > 0
+						and not rocketChatPassword == None
+						and len(rocketChatPassword) > 0
 				):
 					self._logger.debug("Send Rocket.Chat msg start")
 
@@ -3345,14 +4313,14 @@ class OctoslackPlugin(
 							"Deleting local Rocket.Chat asset: "
 							+ str(rc_image_local_path)
 						)
-						os.remove(rc_image_local_path)
+						self.delete_file(rc_image_local_path)
 				elif (
-					not matrixServerURL == None
-					and len(matrixServerURL) > 0
-					and not matrixAccessToken == None
-					and len(matrixAccessToken) > 0
-					and not matrixUserID == None
-					and len(matrixUserID) > 0
+						not matrixServerURL == None
+						and len(matrixServerURL) > 0
+						and not matrixAccessToken == None
+						and len(matrixAccessToken) > 0
+						and not matrixUserID == None
+						and len(matrixUserID) > 0
 				):
 					self._logger.debug("Send Matrix msg start")
 
@@ -3379,14 +4347,14 @@ class OctoslackPlugin(
 
 						if not text == None and len(text) > 0:
 							if len(matrix_msg) > 0 and not matrix_msg.endswith(
-								"<blockquote>"
+									"<blockquote>"
 							):
 								matrix_msg = matrix_msg + "<br/>\n"
 							matrix_msg = matrix_msg + text
 
 						if not footer == None and len(footer) > 0:
 							if len(matrix_msg) > 0 and not matrix_msg.endswith(
-								"<blockquote>"
+									"<blockquote>"
 							):
 								matrix_msg = matrix_msg + "<br/>\n"
 							matrix_msg = matrix_msg + footer
@@ -3394,12 +4362,12 @@ class OctoslackPlugin(
 						mxc_url = None
 
 						if (
-							hosted_url
-							and len(hosted_url) > 0
-							and snapshot_upload_method == "MATRIX"
+								hosted_url
+								and len(hosted_url) > 0
+								and snapshot_upload_method == "MATRIX"
 						):
 							if len(matrix_msg) > 0 and not matrix_msg.endswith(
-								"<blockquote>"
+									"<blockquote>"
 							):
 								matrix_msg = matrix_msg + "<br/>\n"
 
@@ -3420,7 +4388,183 @@ class OctoslackPlugin(
 						)
 					except Exception as e:
 						self._logger.exception("Matrix send error: " + str(e))
+				elif (
+						connection_method == "DISCORD"
+						and (not channel == None)
+						and len(channel) > 0
+				):
+					try:
+						discordWebHookUrl = channel
+						self._logger.debug(
+							"Discord msg channel WebHook: " + str(discordWebHookUrl)
+						)
 
+						discord_color = None
+						if color == "good":
+							discord_color = 242424
+						elif color == "warning":
+							discord_color = 16758825
+						elif color == "danger":
+							discord_color = 16212835
+
+						alternate_username = self._settings.get(
+							["discord_config"], merged=True
+						).get("alternate_username")
+						if (
+								not alternate_username
+								or len(alternate_username.strip()) == 0
+						):
+							alternate_username = None
+
+						avatar_url = self._settings.get(
+							["discord_config"], merged=True
+						).get("avatar_url")
+						if not avatar_url or len(avatar_url.strip()) == 0:
+							avatar_url = None
+
+						self._logger.debug(
+							"Discord msg alternate username: " + str(alternate_username)
+						)
+						self._logger.debug("Discord msg avatar url: " + str(avatar_url))
+						self._logger.debug("Discord msg color: " + str(discord_color))
+
+						content = "**" + pretext + "**"
+
+						discord = DiscordWebhook(
+							url=discordWebHookUrl,
+							username=alternate_username,
+							avatar_url=avatar_url,
+							content=content,
+						)
+
+						embed = DiscordEmbed(
+							title=None, description="\n" + text, color=discord_color
+						)
+
+						if hosted_url and len(hosted_url) > 0:
+							if snapshot_upload_method == "DISCORD":
+								self._logger.debug(
+									"Discord snapshot image to attach: "
+									+ str(hosted_url)
+								)
+								snapshot_filename = hosted_url[
+													hosted_url.rfind("/") + 1:
+													]
+								with open(hosted_url, "rb") as f:
+									discord.add_file(
+										file=f.read(), filename=snapshot_filename
+									)
+							else:
+								embed.set_image(url=hosted_url)
+
+						if (
+								event == "MovieDone"
+								and "movie" in event_payload
+								and snapshot_upload_method == "DISCORD"
+						):
+							timelapse_movie = event_payload["movie"]
+							self._logger.debug(
+								"Discord timelapse movie to attach: "
+								+ str(timelapse_movie)
+							)
+							movie_filename = timelapse_movie[
+											 timelapse_movie.rfind("/") + 1:
+											 ]
+							with open(timelapse_movie, "rb") as f:
+								discord.add_file(file=f.read(), filename=movie_filename)
+
+						if not footer == None and len(footer) > 0:
+							embed.set_footer(text=footer)
+
+						discord.add_embed(embed)
+
+						self._logger.debug(
+							"Discord WebHook message json: " + json.dumps(discord.json)
+						)
+
+						discordRsp = discord.execute()
+
+						self._logger.debug(
+							"Discord WebHook execute response: "
+							+ "\n    Status Code: "
+							+ str(discordRsp.status_code)
+							+ "\n    Headers: \n"
+							+ str(discordRsp.headers)
+							+ "\n    Content: \n"
+							+ str(discordRsp.content)
+						)
+					except Exception as e:
+						self._logger.exception(
+							"Discord WebHook message send error: " + str(e)
+						)
+				elif (
+						connection_method == "TEAMS"
+						and (not channel == None)
+						and len(channel) > 0
+				):
+					try:
+						teamsWebHookUrl = channel
+						self._logger.debug(
+							"Teams msg channel WebHook: " + str(teamsWebHookUrl)
+						)
+
+						msg_color = None
+						if color == "good":
+							msg_color = "03B2F8"
+						elif color == "warning":
+							msg_color = "FFB829"
+						elif color == "danger":
+							msg_color = "F76363"
+
+						msg_text = ""
+
+						if not text == None and len(text) > 0:
+							if len(msg_text) > 0:
+								msg_text = msg_text + "\n\n"
+							msg_text = msg_text + text
+
+						teams_msg = pymsteams.connectorcard(teamsWebHookUrl)
+						if pretext:
+							teams_msg.title(pretext)
+						if msg_color:
+							teams_msg.color(msg_color)
+						if msg_text:
+							teams_msg.text(msg_text)
+						if not fallback == None and len(fallback) > 0:
+							teams_msg.summary(fallback)
+
+						if (hosted_url and len(hosted_url) > 0) or (
+								not footer == None and len(footer) > 0
+						):
+							if hosted_url and len(hosted_url) > 0:
+								msg_section = pymsteams.cardsection()
+								msg_section.addImage(hosted_url)
+								teams_msg.addSection(msg_section)
+
+							msg_section = pymsteams.cardsection()
+							if hosted_url and len(hosted_url) > 0:
+								msg_section.activitySubtitle(
+									"[" + hosted_url + "](" + hosted_url + ")"
+								)
+							if not footer == None and len(footer) > 0:
+								msg_section.activityText(footer)
+
+							teams_msg.addSection(msg_section)
+
+						self._logger.debug(
+							"Teams WebHook message json: "
+							+ json.dumps(teams_msg.payload)
+						)
+
+						teamsRsp = teams_msg.send()
+
+						self._logger.debug(
+							"Teams WebHook execute response: " + str(teamsRsp)
+						)
+					except Exception as e:
+						self._logger.exception(
+							"Teams WebHook message send error: " + str(e)
+						)
 		except Exception as e:
 			self._logger.exception("Send message error: " + str(e))
 
@@ -3439,8 +4583,10 @@ class OctoslackPlugin(
 		connection_method = self.connection_method()
 
 		local_file_path, error_msgs = self.retrieve_snapshot_images()
+		if local_file_path == None:
+			return None, error_msgs, None
 
-		dest_filename = local_file_path[local_file_path.rfind("/") + 1 :]
+		dest_filename = local_file_path[local_file_path.rfind("/") + 1:]
 
 		self._logger.debug(
 			"Upload snapshot - connection_method: "
@@ -3451,14 +4597,15 @@ class OctoslackPlugin(
 
 		# Return the file object, later logic will actually upload the asset
 		if (
-			(connection_method == "APITOKEN" and snapshot_upload_method == "SLACK")
-			or (
+				(connection_method == "APITOKEN" and snapshot_upload_method == "SLACK")
+				or (
 				connection_method == "PUSHOVER" and snapshot_upload_method == "PUSHOVER"
-			)
-			or (
+		)
+				or (
 				connection_method == "ROCKETCHAT"
 				and snapshot_upload_method == "ROCKETCHAT"
-			)
+		)
+				or (connection_method == "DISCORD" and snapshot_upload_method == "DISCORD")
 		):
 			return local_file_path, error_msgs, None
 
@@ -3473,9 +4620,10 @@ class OctoslackPlugin(
 				return None, None
 
 			if (
-				snapshot_upload_method == "PUSHOVER"
-				or snapshot_upload_method == "ROCKETCHAT"
-				or snapshot_upload_method == "MATRIX"
+					snapshot_upload_method == "PUSHOVER"
+					or snapshot_upload_method == "ROCKETCHAT"
+					or snapshot_upload_method == "MATRIX"
+					or snapshot_upload_method == "DISCORD"
 			):
 				return None, None
 
@@ -3664,8 +4812,8 @@ class OctoslackPlugin(
 						imgur_album_id = imgur_config["album_id"]
 
 						if (
-							imgur_client_refresh_token == None
-							or len(imgur_client_refresh_token.strip()) == 0
+								imgur_client_refresh_token == None
+								or len(imgur_client_refresh_token.strip()) == 0
 						):
 							imgur_client_refresh_token = None
 						else:
@@ -3679,8 +4827,8 @@ class OctoslackPlugin(
 							imgur_album_id = imgur_album_id.strip()
 
 						if (
-							imgur_client_refresh_token == None
-							or len(imgur_client_refresh_token) == 0
+								imgur_client_refresh_token == None
+								or len(imgur_client_refresh_token) == 0
 						) and (imgur_album_id and len(imgur_album_id) > 0):
 							self._logger.error(
 								"Usage of an Imgur Album ID requires a valid Refresh Token"
@@ -3773,8 +4921,8 @@ class OctoslackPlugin(
 						)
 						error_msgs.append("Imgur error: " + str(e))
 				elif (
-					connection_method == "SLACKPI" and snapshot_upload_method == "SLACK"
-				):
+						connection_method == "WEBHOOK" or connection_method == "APITOKEN"
+				) and snapshot_upload_method == "SLACK":
 					return self.upload_slack_asset(
 						local_file_path,
 						dest_filename,
@@ -3783,8 +4931,8 @@ class OctoslackPlugin(
 						error_msgs,
 					)
 				elif (
-					connection_method == "PUSHBULLET"
-					and snapshot_upload_method == "PUSHBULLET"
+						connection_method == "PUSHBULLET"
+						and snapshot_upload_method == "PUSHBULLET"
 				):
 					try:
 						self._logger.debug("Uploading asset via Pushbullet")
@@ -3800,8 +4948,8 @@ class OctoslackPlugin(
 						if not pushbulletAccessToken == None:
 							pushbulletAccessToken = pushbulletAccessToken.strip()
 						if (
-							pushbulletAccessToken == None
-							or len(pushbulletAccessToken) == 0
+								pushbulletAccessToken == None
+								or len(pushbulletAccessToken) == 0
 						):
 							self._logger.error(
 								"Pushbullet connection not available, skipping asset upload"
@@ -3817,7 +4965,7 @@ class OctoslackPlugin(
 									)
 
 									pushbullet_upload_elapsed = (
-										time.time() - pushbullet_upload_start
+											time.time() - pushbullet_upload_start
 									)
 									self._logger.debug(
 										"Uploaded asset to Pushbullet in "
@@ -3840,7 +4988,7 @@ class OctoslackPlugin(
 						)
 						error_msgs.append("Pushbullet error: " + str(e))
 				elif (
-					connection_method == "MATRIX" and snapshot_upload_method == "MATRIX"
+						connection_method == "MATRIX" and snapshot_upload_method == "MATRIX"
 				):
 					try:
 						self._logger.debug("Uploading asset via Matrix")
@@ -3867,12 +5015,12 @@ class OctoslackPlugin(
 						matrix_rsp = None
 
 						if (
-							matrixServerURL == None
-							or len(matrixServerURL) == 0
-							or matrixAccessToken == None
-							or len(matrixAccessToken) == 0
-							or matrixUserID == None
-							or len(matrixUserID) == 0
+								matrixServerURL == None
+								or len(matrixServerURL) == 0
+								or matrixAccessToken == None
+								or len(matrixAccessToken) == 0
+								or matrixUserID == None
+								or len(matrixUserID) == 0
 						):
 							self._logger.error(
 								"Matrix connection not available, skipping asset upload"
@@ -3899,7 +5047,7 @@ class OctoslackPlugin(
 									)
 
 									matrix_upload_elapsed = (
-										time.time() - matrix_upload_start
+											time.time() - matrix_upload_start
 									)
 									self._logger.debug(
 										"Uploaded asset to Matrix in "
@@ -3922,18 +5070,24 @@ class OctoslackPlugin(
 						error_msgs.append("Matrix error: " + str(e))
 			except Exception as e:
 				self._logger.exception("Asset upload error: %s" % str(e))
-				error_msgs.append(str(e.message))
+
+				if hasattr(e, "message"):
+					error_msg = e.message
+				else:
+					error_msg = str(e)
+
+				error_msgs.append(error_msg)
 			finally:
 				if local_file_path:
 					self._logger.debug(
 						"Deleting local asset after upload: " + str(local_file_path)
 					)
-					os.remove(local_file_path)
+					self.delete_file(local_file_path)
 				self.tmp_imgur_client = None
 		return None, error_msgs, None
 
 	def upload_slack_asset(
-		self, local_file_path, dest_filename, file_description, channels, error_msgs
+			self, local_file_path, dest_filename, file_description, channels, error_msgs
 	):
 		if error_msgs == None:
 			error_msgs = []
@@ -3970,14 +5124,19 @@ class OctoslackPlugin(
 			error_msgs.append("Slack API connection unavailable")
 			return None, error_msgs, None
 
+		file_size = os.stat(local_file_path).st_size
+
+		# str() needd to works around Slacker isinsance(lcoal_file_path, str) bug
 		asset_msg = {
-			"file_": local_file_path,
+			"file_": str(local_file_path),
 			"filename": dest_filename,
 			"title": file_description,
 			"channels": channels,
 		}
 
-		self._logger.debug("Uploading file to Slack: " + str(asset_msg))
+		self._logger.debug(
+			"Uploading file (" + str(file_size) + ") to Slack: " + str(asset_msg)
+		)
 		resp = slackAPIConnection.files.upload(**asset_msg)
 		self._logger.debug("Slack API upload snapshot response: " + resp.raw)
 
@@ -3997,7 +5156,9 @@ class OctoslackPlugin(
 
 		slack_upload_elapsed = time.time() - slack_upload_start
 		self._logger.debug(
-			"Uploaded asset to Slack in "
+			"Uploaded asset (local_file_path: "
+			+ local_file_path
+			+ ") to Slack in "
 			+ str(round(slack_upload_elapsed, 2))
 			+ " seconds"
 		)
@@ -4007,10 +5168,10 @@ class OctoslackPlugin(
 	def retrieve_snapshot_images(self):
 		urls = []
 
-		localCamera = self._settings.globalGet(["webcam", "snapshot"])
-		localCameraFlipH = self._settings.globalGet(["webcam", "flipH"])
-		localCameraFlipV = self._settings.globalGet(["webcam", "flipV"])
-		localCameraRotate90 = self._settings.globalGet(["webcam", "rotate90"])
+		localCamera = self._settings.global_get(["webcam", "snapshot"])
+		localCameraFlipH = self._settings.global_get(["webcam", "flipH"])
+		localCameraFlipV = self._settings.global_get(["webcam", "flipV"])
+		localCameraRotate90 = self._settings.global_get(["webcam", "rotate90"])
 
 		self._logger.debug(
 			"Local camera settings - Snapshot URL:"
@@ -4037,7 +5198,7 @@ class OctoslackPlugin(
 				if len(entry) == 0:
 					continue
 
-				entry = urllib2.unquote(entry)
+				entry = six.moves.urllib.parse.unquote(entry)
 
 				parts = entry.split("|")
 				url = parts[0].strip()
@@ -4071,7 +5232,7 @@ class OctoslackPlugin(
 				target=self.download_image,
 				args=(url, flip_h, flip_v, rotate_90, idx, thread_responses),
 			)
-			t.setDaemon(True)
+			t.daemon = True
 			threads.append(t)
 			t.start()
 
@@ -4110,9 +5271,90 @@ class OctoslackPlugin(
 			combined_image, error_msg = self.combine_images(downloaded_images)
 			if not error_msg == None:
 				error_msgs.append(error_msg)
-			return combined_image, error_msgs
+			return self.resize_snapshot(combined_image, error_msgs)
 		else:
-			return downloaded_images[0], error_msgs
+			return self.resize_snapshot(downloaded_images[0], error_msgs)
+
+	def resize_snapshot(self, local_file_path, error_msgs):
+		connection_method = self.connection_method()
+		if not connection_method == "TEAMS":
+			return local_file_path, error_msgs
+
+		temp_fd = None
+		temp_filename = None
+		try:
+			resize_image_start = time.time()
+
+			img = Image.open(local_file_path)
+			width, height = img.size
+
+			##Higher than documented limits but these appear to work so we'll use them
+			max_x = 1920
+			max_y = 1080
+
+			# Image already fits
+			if width <= max_x and height <= max_y:
+				return local_file_path, error_msgs
+
+			x_pct = max_x / (width * 1.0)
+			y_pct = max_y / (height * 1.0)
+
+			resize_pct = min(x_pct, y_pct)
+
+			new_x = int(width * resize_pct)
+			new_y = int(height * resize_pct)
+
+			new_size = (new_x, new_y)
+
+			self._logger.debug(
+				"Resizing snapshot image. Orig X,Y: ("
+				+ str(width)
+				+ ","
+				+ str(height)
+				+ "), New X,Y: ("
+				+ str(new_size[0])
+				+ ","
+				+ str(new_size[1])
+				+ ")"
+			)
+
+			new_img = img.resize(new_size)
+
+			temp_fd, temp_filename = mkstemp()
+			os.close(temp_fd)
+
+			temp_filename = self.rename_snapshot_filename(temp_filename)
+
+			self._logger.debug("Resized image temp filename: " + str(temp_filename))
+			new_img.save(temp_filename, "JPEG")
+
+			statinfo = os.stat(temp_filename)
+			new_img_size = statinfo.st_size
+
+			resize_image_elapsed = time.time() - resize_image_start
+			self._logger.debug(
+				"Resized image ("
+				+ octoprint.util.get_formatted_size(new_img_size)
+				+ ") in "
+				+ str(round(resize_image_elapsed, 2))
+				+ " seconds"
+			)
+
+			img.close()
+			new_img.close()
+
+			self.delete_file(local_file_path)
+
+			return temp_filename, error_msgs
+		except Exception as e:
+			self._logger.exception("Error opening snapshot image: " + str(e))
+			error_msgs.append(str(e))
+			return local_file_path, error_msgs
+
+		self._logger.debug(
+			"Rename tmp file - Existing tmp filename: " + str(tmp_filename)
+		)
+		return local_file_path, error_msgs
 
 	def generate_snapshot_filename(self):
 		return "Snapshot_" + str(uuid.uuid1()).replace("-", "") + ".png"
@@ -4124,9 +5366,9 @@ class OctoslackPlugin(
 			)
 
 			new_filename = (
-				tmp_filename[: tmp_filename.rfind("/")]
-				+ "/"
-				+ self.generate_snapshot_filename()
+					tmp_filename[: tmp_filename.rfind("/")]
+					+ "/"
+					+ self.generate_snapshot_filename()
 			)
 			self._logger.debug(
 				"Rename tmp file - New tmp filename: " + str(new_filename)
@@ -4170,7 +5412,7 @@ class OctoslackPlugin(
 				if not basic_auth_user == None:
 					url = new_url
 
-			imgReq = urllib2.Request(url)
+			imgReq = six.moves.urllib.request.Request(url)
 
 			if not basic_auth_user == None and not basic_auth_pwd == None:
 				auth_header = base64.b64encode(
@@ -4178,7 +5420,7 @@ class OctoslackPlugin(
 				)
 				imgReq.add_header("Authorization", "Basic %s" % auth_header)
 
-			imgRsp = urllib2.urlopen(imgReq, timeout=2)
+			imgRsp = six.moves.urllib.request.urlopen(imgReq, timeout=2)
 
 			temp_fd, temp_filename = mkstemp()
 			os.close(temp_fd)
@@ -4235,15 +5477,14 @@ class OctoslackPlugin(
 					"Saving transposed image for URL: " + url + " to " + temp_filename
 				)
 
-				if tmp_img.mode in ("RGBA", "LA"):
+				if tmp_img.mode != "RGB":
 					self._logger.debug(
 						"Converting transposed image to RGB from: " + str(tmp_img.mode)
 					)
-					rgb_img = Image.new("RGB", tmp_img.size, (0, 0, 0))
-					rgb_img.paste(tmp_img, mask=tmp_img.split()[3])
-					tmp_img = rgb_img
+					tmp_img = tmp_img.convert("RGB")
 
 				tmp_img.save(temp_filename, "JPEG")
+				tmp_img.close()
 
 			responses[rsp_idx] = (temp_filename, None)
 		except Exception as e:
@@ -4256,7 +5497,6 @@ class OctoslackPlugin(
 				imgData.close()
 
 	def combine_images(self, local_paths):
-
 		temp_fd = None
 		temp_filename = None
 
@@ -4275,7 +5515,7 @@ class OctoslackPlugin(
 			if images == 0:
 				return None, None
 
-			widths, heights = zip(*(i.size for i in images))
+			widths, heights = list(zip(*(i.size for i in images)))
 
 			total_width = sum(widths)
 			max_width = max(widths)
@@ -4382,7 +5622,7 @@ class OctoslackPlugin(
 					if arrangement == "VERTICAL":
 						x_adjust = image_spacer
 						if im.size[0] != max_width:
-							x_adjust = (max_width - im.size[0]) / 2
+							x_adjust = int((max_width - im.size[0]) / 2)
 
 						new_im.paste(im, (x_adjust, y_offset))
 						y_offset += im.size[1]
@@ -4390,7 +5630,7 @@ class OctoslackPlugin(
 					elif arrangement == "HORIZONTAL":
 						y_adjust = image_spacer
 						if im.size[1] != max_height:
-							y_adjust = (max_height - im.size[1]) / 2
+							y_adjust = int((max_height - im.size[1]) / 2)
 
 						new_im.paste(im, (x_offset, y_adjust))
 						x_offset += im.size[0]
@@ -4407,11 +5647,11 @@ class OctoslackPlugin(
 
 					x_adjust = 0
 					if width < col_width:
-						x_adjust = (col_width - width) / 2
+						x_adjust = int((col_width - width) / 2)
 
 					y_adjust = 0
 					if height < row_height:
-						y_adjust = (row_height - height) / 2
+						y_adjust = int((row_height - height) / 2)
 
 					new_im.paste(im, (x_offset + x_adjust, y_offset + y_adjust))
 
@@ -4434,6 +5674,7 @@ class OctoslackPlugin(
 
 			self._logger.debug("Combine image temp filename: " + str(temp_filename))
 			new_im.save(temp_filename, "JPEG")
+			new_im.close()
 
 			statinfo = os.stat(temp_filename)
 			new_img_size = statinfo.st_size
@@ -4451,14 +5692,19 @@ class OctoslackPlugin(
 				im.close()
 
 			for tmpFile in local_paths:
-				os.remove(tmpFile)
+				self.delete_file(tmpFile)
 
 			return temp_filename, None
 		except Exception as e:
 			self._logger.exception(
 				"Error generating combined snapshot image: %s" % (str(e))
 			)
-			return None, str(e.message)
+
+			if hasattr(e, "message"):
+				error_msg = e.message
+			else:
+				error_msg = str(e)
+			return None, error_msg
 
 	active_gcode_events = []
 	active_gcode_received_events = []
@@ -4481,14 +5727,14 @@ class OctoslackPlugin(
 
 			for gcode_event in tmp_gcode_events:
 				if (
-					gcode_event["Enabled"] == False
-					and gcode_event["CommandEnabled"] == False
+						gcode_event["Enabled"] == False
+						and gcode_event["CommandEnabled"] == False
 				) or len(gcode_event["Gcode"].strip()) == 0:
 					continue
 
 				if (
-					"GcodeMatchType" in gcode_event
-					and gcode_event["GcodeMatchType"] == "Regex"
+						"GcodeMatchType" in gcode_event
+						and gcode_event["GcodeMatchType"] == "Regex"
 				):
 					internalName = gcode_event["InternalName"]
 					regex_text = gcode_event["Gcode"]
@@ -4527,12 +5773,12 @@ class OctoslackPlugin(
 			self._logger.exception("Error loading gcode listener events: %s" % (str(e)))
 
 	def sending_gcode(
-		self, comm_instance, phase, cmd, cmd_type, gcode, *args, **kwargs
+			self, comm_instance, phase, cmd, cmd_type, gcode, *args, **kwargs
 	):
 		if (
-			not gcode
-			or self.active_gcode_events == None
-			or len(self.active_gcode_events) == 0
+				not gcode
+				or self.active_gcode_events == None
+				or len(self.active_gcode_events) == 0
 		):
 			return (cmd,)
 
@@ -4545,7 +5791,7 @@ class OctoslackPlugin(
 					match_type = None
 
 				if self.evaluate_gcode_trigger(
-					cmd, gcode_event, match_type, trigger_gcode
+						cmd, gcode_event, match_type, trigger_gcode
 				):
 					notification_enabled = gcode_event["Enabled"]
 					command_enabled = gcode_event["CommandEnabled"]
@@ -4560,28 +5806,28 @@ class OctoslackPlugin(
 					)
 
 					self.handle_event(
-						"GcodeEvent",
-						None,
-						{"cmd": cmd},
-						notification_enabled,
-						command_enabled,
-						gcode_event,
+						"GcodeEvent", None, {"cmd": cmd}, False, False, gcode_event
 					)
 		except Exception as e:
+			if hasattr(e, "message"):
+				error_msg = e.message
+			else:
+				error_msg = str(e)
+
 			self._logger.exception(
 				"Error attempting to match sent G-code command to the configured events, G-code: "
 				+ gcode
 				+ ", Error: "
-				+ str(e.message)
+				+ error_msg
 			)
 
 		return (cmd,)
 
 	def received_gcode(self, comm_instance, line, *args, **kwargs):
 		if (
-			not line
-			or self.active_gcode_received_events == None
-			or len(self.active_gcode_received_events) == 0
+				not line
+				or self.active_gcode_received_events == None
+				or len(self.active_gcode_received_events) == 0
 		):
 			return line
 
@@ -4594,7 +5840,7 @@ class OctoslackPlugin(
 					match_type = None
 
 				if self.evaluate_gcode_trigger(
-					line, gcode_event, match_type, trigger_gcode
+						line, gcode_event, match_type, trigger_gcode
 				):
 					notification_enabled = gcode_event["Enabled"]
 					command_enabled = gcode_event["CommandEnabled"]
@@ -4608,25 +5854,25 @@ class OctoslackPlugin(
 						+ str(command_enabled)
 					)
 					self.handle_event(
-						"GcodeEvent",
-						None,
-						{"cmd": line},
-						notification_enabled,
-						command_enabled,
-						gcode_event,
+						"GcodeEvent", None, {"cmd": line}, False, False, gcode_event
 					)
 		except Exception as e:
+			if hasattr(e, "message"):
+				error_msg = e.message
+			else:
+				error_msg = str(e)
+
 			self._logger.exception(
 				"Error attempting to match received G-code command to the configured events, G-code: "
 				+ line
 				+ ", Error: "
-				+ str(e.message)
+				+ error_msg
 			)
 
 		return line
 
 	def evaluate_gcode_trigger(
-		self, input_gcode, gcode_event, match_type, trigger_gcode
+			self, input_gcode, gcode_event, match_type, trigger_gcode
 	):
 		if input_gcode == None or trigger_gcode == None:
 			return False
@@ -4663,6 +5909,9 @@ class OctoslackPlugin(
 
 	def remove_non_ascii(self, input):
 		return self.non_ascii_regex.sub(" ", input)
+
+
+__plugin_pythoncompat__ = ">=2.7,<4"
 
 
 def __plugin_load__():
