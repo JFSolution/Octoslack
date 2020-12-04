@@ -776,20 +776,7 @@ var Octoslack = {
 	        //TriggerHeight
 	        customSettingsHtml.push("        <div class='octoprint_config_row'>");
 	        customSettingsHtml.push("            <input type='number' step='0.1' min='0' max='10000' class='input-mini text-right' id='octoslack_event_" + internalName + "_TriggerHeight' "
-                    + (useDataBind ? "data-bind='value: settings.plugins.Octoslack.supported_events." + internalName + ".//IntervalHeight\n" +
-                    "\t        customSettingsHtml.push(\"        <div class='octoprint_config_row'>\");\n" +
-                    "\t        customSettingsHtml.push(\"            <input type='number' step='0.1' min='0' max='10000' class='input-mini text-right' id='octoslack_event_\" + internalName + \"_TriggerHeight' \"\n" +
-                    "                    + (useDataBind ? \"data-bind='value: settings.plugins.Octoslack.supported_events.\" + internalName + \".TriggerHeight'\" : \"\")\n" +
-                    "                    + \">\");\n" +
-                    "\t        customSettingsHtml.push(\"            <div class='octoslack_label octoslack_action_label'>Trigger - Height (mm)</div>\");\n" +
-                    "\t        customSettingsHtml.push(\"            <br/>\");\n" +
-                    "\t        customSettingsHtml.push(\"            <small class='muted'>\");\n" +
-                    "\t        customSettingsHtml.push(\"                0 = disabled\");\n" +
-                    "\t        customSettingsHtml.push(\"                <br/>\");\n" +
-                    "\t        customSettingsHtml.push(\"                A value of 10 would indicate report progress should be sent the first time the nozzle height has raised at 10mm\");\n" +
-                    "\t        customSettingsHtml.push(\"            </small>\");\n" +
-                    "\t        customSettingsHtml.push(\"        </div>\");\n" +
-                    "\t        customSettingsHtml.push(\"        <br/>\");'" : "")
+                    + (useDataBind ? "data-bind='value: settings.plugins.Octoslack.supported_events." + internalName + ".TriggerHeight'" : "")
                     + ">");
 	        customSettingsHtml.push("            <div class='octoslack_label octoslack_action_label'>Trigger - Height (mm)</div>");
 	        customSettingsHtml.push("            <br/>");
